@@ -1,37 +1,37 @@
 @import "tailwindcss";
 
 /*
- * Copycall design tokens.
+ * Copycall design tokens (v2, "The Tape").
  *
  * Brand colours are taken from Panta's live site, NOT guessed. Source for every
- * hex below: https://panta.market production CSS bundle
+ * Panta hex below: https://panta.market production CSS bundle
  * (/_next/static/css/192cfd2d3f908237.css, fetched 2026-09-29) and the page <body>.
  *   #23ad4e  --primary in Panta's :root/.dark theme; most-used colour in the bundle (77 uses)
  *   #1d9444  Panta hover state for primary buttons/text (hover:bg-[#1d9444])
  *   #048620  Panta deep green (bg-[#048620], border-[#048620]/20)
  *   #78d02f  Panta lime accent (bg-[#78d02f], text-[#78d02f]/80)
- *   #ff6b7a  Panta coral/"NO" accent (bg-[#FF6B7A], border-[#FF6B7A])
+ *   #ff6b7a  Panta coral / NO accent (bg-[#FF6B7A], border-[#FF6B7A])
  *   #dd7785  Panta muted rose (bg-[#DD7785], from-[#DD7785]/20)
  *   #0b0d0f  Panta page background (<body class="bg-[#0b0d0f]">)
  *   #121417 #16191d #1a1f23 #1e2328  Panta dark surface steps (bg-[#...] utilities)
  *   #252b33 #2a3139                  Panta border/raised steps
- * Neutral text colours (#f4f6f8, #aab3bd, #7f8a96) are Copycall's own, chosen
- * for WCAG AA on the dark surfaces above (see README "Design tokens").
+ * Text colours, #5fd07f/#34c05f tints and the amber flag colour are Copycall's own,
+ * chosen for WCAG AA on the surfaces above (ratios noted inline).
  */
 @theme {
   /* brand (Panta) */
-  --color-brand-300: #5fd07f; /* Copycall tint of #23ad4e for text on dark glass (AA) */
+  --color-brand-300: #5fd07f; /* Copycall tint of #23ad4e; 10.0:1 on #0b0d0f */
   --color-brand-400: #34c05f; /* Copycall tint of #23ad4e */
   --color-brand-500: #23ad4e; /* Panta --primary */
   --color-brand-600: #1d9444; /* Panta primary hover */
   --color-brand-700: #048620; /* Panta deep green */
-  --color-lime-400: #78d02f;  /* Panta lime accent */
-  --color-coral-400: #ff6b7a; /* Panta coral / NO accent */
-  --color-rose-400: #dd7785;  /* Panta muted rose */
-  --color-amber-300: #f5c451; /* Copycall warning (creator flag), AA on ink */
+  --color-lime-400: #78d02f; /* Panta lime accent */
+  --color-coral-400: #ff6b7a; /* Panta coral / NO; 7.1:1 on #0b0d0f */
+  --color-rose-400: #dd7785; /* Panta muted rose */
+  --color-amber-300: #f5c451; /* Copycall creator-flag amber; 12.0:1 on #0b0d0f */
 
   /* surfaces (Panta) */
-  --color-ink-950: #0b0d0f; /* Panta page bg */
+  --color-ink-950: #0b0d0f;
   --color-ink-900: #121417;
   --color-ink-850: #16191d;
   --color-ink-800: #1a1f23;
@@ -39,41 +39,73 @@
   --color-ink-700: #252b33;
   --color-ink-600: #2a3139;
 
-  /* text (Copycall, AA on ink-950..ink-750) */
-  --color-fg: #f4f6f8;      /* 18.0:1 on #0b0d0f, 14.6:1 on #1e2328 */
+  /* text (Copycall) */
+  --color-fg: #f4f6f8; /* 18.0:1 on #0b0d0f, 14.6:1 on #1e2328 */
   --color-fg-muted: #aab3bd; /* 9.2:1 on #0b0d0f, 7.5:1 on #1e2328 */
   --color-fg-subtle: #8a95a1; /* 6.4:1 on #0b0d0f, 5.2:1 on #1e2328 */
 
-  /* type */
-  --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
-  --font-display: var(--font-funnel-display), var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  /* hairlines */
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-line-strong: rgb(255 255 255 / 0.14);
 
-  /* radii */
-  --radius-glass: 1.25rem;
-  --radius-pill: 999px;
+  /* type: editorial serif display, precise grotesk UI, mono numbers */
+  --font-display: var(--font-instrument-serif), ui-serif, Georgia, serif;
+  --font-sans: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, monospace;
 
-  /* blur */
-  --blur-glass: 20px;
-  --blur-glass-strong: 32px;
+  /* type scale (4px baseline; line-heights on a 4/8 rhythm) */
+  --text-label: 0.6875rem; /* 11px mono caps labels */
+  --text-label--line-height: 1rem;
+  --text-label--letter-spacing: 0.08em;
+  --text-xs: 0.75rem; /* 12 */
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.8125rem; /* 13 */
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.9375rem; /* 15 */
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.0625rem; /* 17 */
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.25rem; /* 20 */
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.75rem; /* 28 */
+  --text-2xl--line-height: 2rem;
+  --text-3xl: 2.5rem; /* 40 */
+  --text-3xl--line-height: 2.75rem;
+  --text-4xl: 3.5rem; /* 56 */
+  --text-4xl--line-height: 3.5rem;
+  --text-5xl: 4.5rem; /* 72 */
+  --text-5xl--line-height: 4.25rem;
 
-  /* shadows (inner highlight pattern mirrors Panta's inset 0 1px 0 #ffffff14) */
-  --shadow-glass: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 1px 0 rgb(0 0 0 / 0.4), 0 20px 50px -20px rgb(0 0 0 / 0.7);
-  --shadow-glass-hover: inset 0 1px 0 rgb(255 255 255 / 0.12), 0 1px 0 rgb(0 0 0 / 0.4), 0 28px 60px -20px rgb(0 0 0 / 0.8);
-  --shadow-brand-glow: 0 0 0 1px rgb(35 173 78 / 0.35), 0 10px 30px -8px rgb(35 173 78 / 0.55);
+  /* radii: ticks/tags 4, controls 8, cards 12 */
+  --radius-tick: 2px;
+  --radius-tag: 4px;
+  --radius-control: 8px;
+  --radius-card: 12px;
+
+  /* blur (glass is used sparingly: header, tape rail, copy card) */
+  --blur-glass: 16px;
+
+  /* shadows */
+  --shadow-card: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 24px 48px -24px rgb(0 0 0 / 0.8);
+  --shadow-press: inset 0 1px 0 rgb(0 0 0 / 0.25);
 
   /* motion */
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
-  --animate-fade-up: fade-up 0.7s var(--ease-out-soft) both;
-  --animate-shimmer: shimmer 2.4s linear infinite;
+  --animate-rise: rise 0.6s var(--ease-out-soft) both;
+  --animate-tape: tape 70s linear infinite;
+  --animate-blink: blink 2.4s ease-in-out infinite;
 
-  @keyframes fade-up {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: none; }
   }
-  @keyframes shimmer {
-    from { background-position: 200% 0; }
-    to { background-position: -200% 0; }
+  @keyframes tape {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
   }
 }
 
@@ -86,59 +118,81 @@
     background: var(--color-ink-950);
     color: var(--color-fg);
     font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
     -webkit-font-smoothing: antialiased;
-    overflow-x: hidden;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "ss01", "cv11";
   }
   ::selection {
     background: rgb(35 173 78 / 0.35);
   }
-  /* Visible keyboard focus everywhere */
   :focus-visible {
     outline: 2px solid var(--color-brand-300);
-    outline-offset: 3px;
-    border-radius: 6px;
+    outline-offset: 2px;
   }
 }
 
-/* Reusable glass surfaces */
+/* Mono numerals: tabular + slashed zero, for every stat */
+@utility num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: "tnum", "zero";
+  letter-spacing: -0.01em;
+}
+
+/* 11px mono uppercase label */
+@utility label {
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  line-height: var(--text-label--line-height);
+  letter-spacing: var(--text-label--letter-spacing);
+  text-transform: uppercase;
+}
+
+/* Frosted glass, used only where it does a job (content scrolling beneath it) */
 @utility glass {
-  background: linear-gradient(180deg, rgb(255 255 255 / 0.06), rgb(255 255 255 / 0.025));
-  border: 1px solid rgb(255 255 255 / 0.09);
-  box-shadow: var(--shadow-glass);
+  background: rgb(14 16 19 / 0.72);
+  border: 1px solid var(--color-line);
   backdrop-filter: blur(var(--blur-glass)) saturate(140%);
   -webkit-backdrop-filter: blur(var(--blur-glass)) saturate(140%);
 }
-@utility glass-strong {
-  background: linear-gradient(180deg, rgb(22 25 29 / 0.78), rgb(18 20 23 / 0.7));
-  border: 1px solid rgb(255 255 255 / 0.1);
-  box-shadow: var(--shadow-glass);
-  backdrop-filter: blur(var(--blur-glass-strong)) saturate(150%);
-  -webkit-backdrop-filter: blur(var(--blur-glass-strong)) saturate(150%);
+
+/* Solid raised card on the ground */
+@utility card {
+  background: linear-gradient(180deg, rgb(26 31 35 / 0.9), rgb(18 20 23 / 0.9));
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
 }
 
-/* Background gradient mesh: soft Panta-green + lime + coral glows */
-.bg-mesh {
+/* The ground: Panta near-black, film grain, one faint green light. */
+.ground {
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(60rem 40rem at 12% -10%, rgb(35 173 78 / 0.34), transparent 60%),
-    radial-gradient(40rem 30rem at 92% 8%, rgb(120 208 47 / 0.2), transparent 60%),
-    radial-gradient(50rem 35rem at 85% 70%, rgb(255 107 122 / 0.1), transparent 60%),
-    radial-gradient(45rem 35rem at 0% 80%, rgb(4 134 32 / 0.22), transparent 60%),
+    radial-gradient(48rem 28rem at 8% -6%, rgb(35 173 78 / 0.13), transparent 70%),
+    radial-gradient(36rem 22rem at 100% 38%, rgb(4 134 32 / 0.07), transparent 70%),
     var(--color-ink-950);
 }
-.bg-mesh::after {
-  /* faint grid for depth */
+.ground::after {
   content: "";
   position: absolute;
   inset: 0;
-  background-image:
-    linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px);
-  background-size: 56px 56px;
-  mask-image: radial-gradient(ellipse at 50% 0%, black 30%, transparent 75%);
+  opacity: 0.07;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .6 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Ticker tape: pauses on hover/focus; static and scrollable with reduced motion */
+.tape-track {
+  animation: var(--animate-tape);
+}
+.tape:hover .tape-track,
+.tape:focus-within .tape-track {
+  animation-play-state: paused;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -149,5 +203,11 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+  .tape-track {
+    animation: none !important;
+  }
+  .tape-viewport {
+    overflow-x: auto;
   }
 }

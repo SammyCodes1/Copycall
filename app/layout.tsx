@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Figtree, Funnel_Display, Geist_Mono } from "next/font/google";
+import { Instrument_Serif, JetBrains_Mono, Schibsted_Grotesk } from "next/font/google";
 import { Footer } from "@/components/Footer";
 import { Header } from "@/components/Header";
 import { MockBanner } from "@/components/MockBanner";
@@ -8,11 +8,20 @@ import { getSession } from "@/lib/auth";
 import { isMockMode } from "@/lib/env";
 import "./globals.css";
 
-// Display + sans pairing (same families Panta's site uses: Funnel Display for
-// display, Figtree for UI), self-hosted by next/font. Geist Mono for addresses.
-const display = Funnel_Display({ subsets: ["latin"], variable: "--font-funnel-display", display: "swap" });
-const sans = Figtree({ subsets: ["latin"], variable: "--font-figtree", display: "swap" });
-const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono", display: "swap" });
+// Type system (all SIL Open Font License 1.1, self-hosted at build by next/font,
+// so the CSP's font-src 'self' holds; no Google Fonts CDN at runtime):
+//  - Instrument Serif: editorial display face with character (headlines only)
+//  - Schibsted Grotesk: precise grotesk for UI and body
+//  - JetBrains Mono: tabular numerals, addresses, labels
+const display = Instrument_Serif({
+  subsets: ["latin"],
+  weight: "400",
+  style: ["normal", "italic"],
+  variable: "--font-instrument-serif",
+  display: "swap",
+});
+const sans = Schibsted_Grotesk({ subsets: ["latin"], variable: "--font-schibsted", display: "swap" });
+const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jetbrains", display: "swap" });
 
 export const metadata: Metadata = {
   title: "Copycall · Copy the sharpest Panta callers",
@@ -31,7 +40,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${display.variable} ${sans.variable} ${mono.variable} h-full`}>
       <body className="flex min-h-full flex-col">
-        <div className="bg-mesh" aria-hidden />
+        <div className="ground" aria-hidden />
         <WalletProviders>
           {mock && <MockBanner />}
           <Header sessionWallet={session?.w ?? null} />

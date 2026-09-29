@@ -3,22 +3,16 @@ import { cn } from "./cn";
 
 type Props<T extends ElementType> = {
   as?: T;
-  strong?: boolean; // denser, more opaque glass for dialogs/overlays
-  interactive?: boolean; // subtle lift on hover
+  /** glass = frosted (content moves beneath it); card = solid raised surface. */
+  surface?: "glass" | "card";
 } & ComponentPropsWithoutRef<T>;
 
-/** Frosted translucent panel: backdrop blur, 1px light border, soft inner highlight. */
-export function GlassCard<T extends ElementType = "div">({ as, strong, interactive, className, ...rest }: Props<T>) {
+/** Surface primitive. Glass is reserved for elements that float over content. */
+export function GlassCard<T extends ElementType = "div">({ as, surface = "card", className, ...rest }: Props<T>) {
   const Tag = (as ?? "div") as ElementType;
   return (
     <Tag
-      className={cn(
-        strong ? "glass-strong" : "glass",
-        "relative rounded-[var(--radius-glass)]",
-        interactive &&
-          "transition duration-300 ease-[var(--ease-out-soft)] hover:-translate-y-0.5 hover:border-white/15 hover:shadow-[var(--shadow-glass-hover)]",
-        className,
-      )}
+      className={cn(surface === "glass" ? "glass rounded-[var(--radius-card)]" : "card", "relative", className)}
       {...rest}
     />
   );
