@@ -370,6 +370,73 @@ export const supabaseDataStore: DataStore = {
     if (error || !data) fail("update settings");
     return toSettings(data as SettingsRow);
   },
+
+  async createLinkCode(userId, codeHash, expiresAtSec) {
+    const db = getDb();
+    const del = await db.from("telegram_link_codes").delete().eq("user_id", userId);
+    if (del.error) fail("clear link codes");
+    const { error } = await db.from("telegram_link_codes").insert({ code: codeHash, user_id: userId, expires_at: iso(expiresAtSec) });
+    if (error) fail("create link code");
+  },
+
+  async linkTelegramChat(codeHash, chatId) {
+    const { data, error } = await getDb().rpc("link_telegram_chat", { p_code_hash: codeHash, p_chat_id: chatId });
+    if (error) fail("link telegram chat");
+    return typeof data === "string" ? data : null;
+  },
+
+  async pauseAlertsForChat(chatId) {
+    const { data, error } = await getDb()
+      .from("users")
+      .update({ alerts_enabled: false })
+      .eq("telegram_chat_id", chatId)
+      .eq("alerts_enabled", true)
+      .select("id");
+    if (error) fail("pause alerts");
+    return (data ?? []).length;
+  },
+
+  async alertSubscriptions() {
+    const { data, error } = await getDb().rpc("alert_subscriptions");
+    if (error) fail("alert subscriptions");
+    return ((data ?? []) as { user_id: string; leader_wallet: string; followed_at: string; telegram_chat_id: number | string | null }[]).map(
+      (r) => ({
+        userId: r.user_id,
+        leaderWallet: r.leader_wallet,
+        followedAt: sec(r.followed_at) ?? 0,
+        chatId: r.telegram_chat_id === null ? null : Number(r.telegram_chat_id),
+      }),
+    );
+  },
+
+  async tradesBySignatures(sigs) {
+    if (!sigs.length) return [];
+    const { data, error } = await getDb().from("trades").select(TRADE_COLUMNS).in("signature", sigs);
+    if (error) fail("trades by signature");
+    return ((data ?? []) as TradeRow[]).map(toStoredTrade);
+  },
+
+  async createAlerts(rows) {
+    if (!rows.length) return [];
+    // ON CONFLICT (user_id, trade_id) DO NOTHING RETURNING: overlapping runs can't double-send.
+    const { data, error } = await getDb()
+      .from("alerts")
+      .upsert(
+        rows.map((r) => ({ user_id: r.userId, trade_id: r.tradeId, status: "pending" })),
+        { onConflict: "user_id,trade_id", ignoreDuplicates: true },
+      )
+      .select("id, user_id, trade_id");
+    if (error) fail("create alerts");
+    return (data ?? []).map((r) => ({ id: r.id as string, userId: r.user_id as string, tradeId: r.trade_id as string }));
+  },
+
+  async setAlertStatus(id, status, sentAtSec) {
+    const { error } = await getDb()
+      .from("alerts")
+      .update({ status, sent_at: sentAtSec === null ? null : iso(sentAtSec) })
+      .eq("id", id);
+    if (error) fail("set alert status");
+  },
 };
 
 const SETTINGS_COLUMNS = "max_stake_usdc, slippage_bps, alerts_enabled, telegram_chat_id";

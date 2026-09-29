@@ -1,5 +1,7 @@
 /**
- * Background jobs (MVP feature 2; alerts arrive in step 8).
+ * Background jobs (MVP features 2 and 7).
+ *
+ * Alerts (runAlerts, below) poll followed wallets every 2 minutes.
  *
  * Leaderboard sync, run by GET /api/cron/leaderboard every 10-15 minutes:
  *  1. page GET /markets/ and upsert the catalog
@@ -16,11 +18,19 @@
  *
  * Dependencies are injected so the job is unit-testable with fixtures.
  */
+import { createHash } from "node:crypto";
+import { formatAlert } from "./alert-message";
 import type { DataStore, StoredPosition } from "./data-store";
 import { PantaError } from "./panta-error";
-import type { MarketListResponse, MarketTradesResponse, PositionsResponse } from "./schemas";
+import type {
+  MarketListResponse,
+  MarketTradesResponse,
+  PantaMarket,
+  PositionsResponse,
+  WalletTradesResponse,
+} from "./schemas";
 import { computeTraderStats, recentResults } from "./stats";
-import { toTradeInsert, type TradeInsert } from "./trades";
+import { deriveSide, toTradeInsert, type TradeInsert } from "./trades";
 
 export type SyncDeps = {
   store: DataStore;
@@ -174,5 +184,193 @@ export async function runLeaderboardSync(deps: SyncDeps): Promise<SyncSummary> {
     out.stoppedEarly.push("positions:rate_limited");
   }
 
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Copy alerts: GET /api/cron/alerts every 2 minutes (MVP feature 7)
+// ---------------------------------------------------------------------------
+
+export type AlertDeps = {
+  store: DataStore;
+  panta: {
+    getWalletTrades(wallet: string, limit?: number): Promise<WalletTradesResponse>;
+    getMarket(marketId: string): Promise<PantaMarket>;
+  };
+  getMarketCreator(marketAddress: string): Promise<{ creator: string } | null>;
+  /** Sends a Telegram message; null when Telegram isn't configured (alerts are logged). */
+  send: ((chatId: number, text: string) => Promise<void>) | null;
+  appOrigin: string;
+  mock: boolean;
+  now?: () => number; // ms
+  budget?: Partial<AlertBudget>;
+  log?: (msg: string) => void;
+};
+
+export type AlertBudget = {
+  /** Panta "read" calls per run (wallet tapes + unknown markets). Runs every 2 min => <= 45/min. */
+  read: number;
+  /** On-chain creator lookups per run. */
+  creators: number;
+  /** Messages per run. */
+  messages: number;
+};
+export const ALERT_BUDGET: AlertBudget = { read: 90, creators: 5, messages: 200 };
+
+/** Trades older than this when first seen are not alerted (e.g. after downtime). */
+export const MAX_ALERT_AGE_SEC = 30 * 60;
+
+export type AlertSummary = {
+  leaders: number;
+  leadersPolled: number;
+  newTrades: number;
+  alertsCreated: number;
+  sent: number;
+  logged: number;
+  skipped: number;
+  failed: number;
+  pantaCalls: number;
+  stoppedEarly: string[];
+};
+
+/** Rotate which leaders get polled first so a large follow list is covered across runs. */
+function rotation(wallet: string, bucket: number): string {
+  return createHash("sha256").update(`${bucket}:${wallet}`).digest("hex");
+}
+
+export async function runAlerts(deps: AlertDeps): Promise<AlertSummary> {
+  const { store, panta } = deps;
+  const budget = { ...ALERT_BUDGET, ...deps.budget };
+  const nowSec = Math.floor((deps.now ?? Date.now)() / 1000);
+  const log = deps.log ?? (() => {});
+  const out: AlertSummary = {
+    leaders: 0,
+    leadersPolled: 0,
+    newTrades: 0,
+    alertsCreated: 0,
+    sent: 0,
+    logged: 0,
+    skipped: 0,
+    failed: 0,
+    pantaCalls: 0,
+    stoppedEarly: [],
+  };
+
+  const subs = await store.alertSubscriptions();
+  const byLeader = new Map<string, typeof subs>();
+  for (const s of subs) byLeader.set(s.leaderWallet, [...(byLeader.get(s.leaderWallet) ?? []), s]);
+  out.leaders = byLeader.size;
+  const bucket = Math.floor(nowSec / 120);
+  const leaders = [...byLeader.keys()].sort((a, b) => rotation(a, bucket).localeCompare(rotation(b, bucket)));
+
+  let creatorLookups = 0;
+  for (const leader of leaders) {
+    if (out.pantaCalls >= budget.read) {
+      out.stoppedEarly.push("read_budget");
+      break;
+    }
+    let tape: WalletTradesResponse;
+    try {
+      out.pantaCalls++;
+      tape = await panta.getWalletTrades(leader, 50);
+    } catch (err) {
+      if (isRateLimited(err)) {
+        out.stoppedEarly.push("rate_limited");
+        break;
+      }
+      log(`wallet tape failed for ${leader}: ${err instanceof Error ? err.message : "error"}`);
+      continue;
+    }
+    out.leadersPolled++;
+
+    // New buys only: primary-phase rows (the copy flow is a primary buy), a
+    // clear side, recent, and from the leader themselves.
+    const fresh = tape.items.filter(
+      (t) => t.wallet === leader && t.isPrimary && t.blockTime !== null && t.blockTime >= nowSec - MAX_ALERT_AGE_SEC && deriveSide(t),
+    );
+    if (fresh.length === 0) continue;
+
+    // Make sure every market exists (trades.market_id FK) and try to know its creator.
+    const marketIds = [...new Set(fresh.map((t) => t.marketId))];
+    const known = new Set((await store.getMarkets(marketIds)).map((m) => m.id));
+    for (const id of marketIds) {
+      if (known.has(id) || out.pantaCalls >= budget.read) continue;
+      try {
+        out.pantaCalls++;
+        const m = await panta.getMarket(id);
+        await store.upsertMarkets([{ id: m.marketId, title: m.title, status: m.phase }]);
+        known.add(id);
+      } catch (err) {
+        log(`market lookup failed for ${id}: ${err instanceof Error ? err.message : "error"}`);
+      }
+    }
+    let creators = await store.getCreators(marketIds);
+    for (const id of marketIds) {
+      if (creators[id] || !known.has(id) || creatorLookups >= budget.creators) continue;
+      creatorLookups++;
+      try {
+        const found = await deps.getMarketCreator(id);
+        await store.setMarketCreator(id, found?.creator ?? null, nowSec);
+      } catch {
+        log(`creator lookup failed for ${id}`);
+      }
+    }
+    creators = await store.getCreators(marketIds);
+
+    const rows = fresh.filter((t) => known.has(t.marketId)).flatMap((t) => toTradeInsert(t, creators[t.marketId]) ?? []);
+    out.newTrades += (await store.insertTrades(rows)).length;
+    // Includes trades the leaderboard sync stored first: they still deserve an alert.
+    const stored = await store.tradesBySignatures(rows.map((r) => r.signature));
+
+    const followers = byLeader.get(leader) ?? [];
+    const wanted = stored.flatMap((t) =>
+      followers.filter((f) => t.blockTime !== null && t.blockTime >= f.followedAt).map((f) => ({ userId: f.userId, tradeId: t.id })),
+    );
+    const created = await store.createAlerts(wanted);
+    out.alertsCreated += created.length;
+    if (created.length === 0) continue;
+
+    const stats = await store.getTraderStats(leader);
+    const markets = new Map((await store.getMarkets(marketIds)).map((m) => [m.id, m]));
+    const tradeById = new Map(stored.map((t) => [t.id, t]));
+    for (const a of created) {
+      const t = tradeById.get(a.tradeId)!;
+      const m = markets.get(t.marketId);
+      const f = followers.find((x) => x.userId === a.userId)!;
+      const text = formatAlert({
+        appOrigin: deps.appOrigin,
+        tradeId: t.id,
+        leaderWallet: leader,
+        hitRate: stats && stats.resolvedCalls > 0 ? stats.hitRate : null,
+        resolvedCalls: stats?.resolvedCalls ?? 0,
+        side: t.side,
+        title: m?.title ?? "Untitled market",
+        isCreatorTrade: t.isCreatorTrade,
+        creatorVerified: m?.creatorVerified ?? false,
+        mock: deps.mock,
+      });
+      if (!deps.send) {
+        log(`alert (Telegram not configured) user=${a.userId}\n${text}`);
+        await store.setAlertStatus(a.id, "logged", nowSec);
+        out.logged++;
+      } else if (f.chatId === null) {
+        await store.setAlertStatus(a.id, "skipped", null); // user hasn't linked Telegram
+        out.skipped++;
+      } else if (out.sent + out.failed >= budget.messages) {
+        out.stoppedEarly.push("message_budget"); // stays pending
+        break;
+      } else {
+        try {
+          await deps.send(f.chatId, text);
+          await store.setAlertStatus(a.id, "sent", nowSec);
+          out.sent++;
+        } catch (err) {
+          log(`telegram send failed: ${err instanceof Error ? err.message : "error"}`);
+          await store.setAlertStatus(a.id, "failed", null);
+          out.failed++;
+        }
+      }
+    }
+  }
   return out;
 }

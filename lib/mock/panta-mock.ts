@@ -9,7 +9,7 @@ import "server-only";
  * on a Vercel production deployment.
  */
 import bs58 from "bs58";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import marketsJson from "@/fixtures/markets.json";
 import positionsJson from "@/fixtures/positions.json";
 import tradesJson from "@/fixtures/trades.json";
@@ -65,8 +65,42 @@ export function getMarketTrades(marketId: string, limit: number) {
   return { marketId, items: trades.filter((t) => t.marketId === marketId).slice(0, limit) };
 }
 
+/**
+ * Mock "live" activity so alerts can be demoed: every fixture wallet makes one
+ * simulated primary buy per minute on a primary-phase fixture market. Rows are
+ * deterministic per (wallet, minute), so repeated polls return the same
+ * signature and dedupe works exactly like the real tape. Mock mode only, and
+ * the whole app shows the MOCK banner.
+ */
+export const MOCK_LIVE_TRADE_EVERY_SEC = 60;
+
+export function mockLiveTrade(wallet: string, nowMs = Date.now()): PantaTradeRow | null {
+  if (!trades.some((t) => t.wallet === wallet)) return null;
+  const open = markets.filter((m) => m.phase === "primary");
+  if (open.length === 0) return null;
+  const bucket = Math.floor(nowMs / 1000 / MOCK_LIVE_TRADE_EVERY_SEC);
+  const h = createHash("sha512").update(`copycall-mock-live:${wallet}:${bucket}`).digest();
+  const market = open[h[0] % open.length];
+  const shares = (5 + (h.readUInt16BE(1) % 9500) / 100).toFixed(2);
+  const yes = h[3] % 2 === 0;
+  return {
+    id: `live-${bucket}-${h.readUInt32BE(4)}`,
+    marketId: market.marketId,
+    wallet,
+    isPrimary: true,
+    yesAmount: yes ? shares : "0",
+    noAmount: yes ? "0" : shares,
+    feePaid: (Number(shares) * 0.01).toFixed(2),
+    blockTime: bucket * MOCK_LIVE_TRADE_EVERY_SEC,
+    signature: bs58.encode(h.subarray(0, 64)),
+    quoteAsset: "USDC",
+  };
+}
+
 export function getWalletTrades(wallet: string, limit: number) {
-  return { wallet, items: trades.filter((t) => t.wallet === wallet).slice(0, limit) };
+  const live = mockLiveTrade(wallet);
+  const rows = trades.filter((t) => t.wallet === wallet);
+  return { wallet, items: (live ? [live, ...rows] : rows).slice(0, limit) };
 }
 
 export function getPositions(wallet: string) {

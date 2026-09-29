@@ -2,12 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { FollowButton } from "@/components/FollowButton";
 import { SettingsForm } from "@/components/SettingsForm";
+import { TelegramConnect } from "@/components/TelegramConnect";
 import { WalletButton } from "@/components/WalletButton";
 import { ago, shortAddr } from "@/components/format";
 import { HitRate } from "@/components/ui/Badge";
 import { getSession } from "@/lib/auth";
 import { ensureMockData, getDataStore } from "@/lib/data";
 import { displayNowSec } from "@/lib/queries";
+import { isTelegramConfigured } from "@/lib/telegram";
 
 export const metadata: Metadata = { title: "Settings · Copycall" };
 
@@ -57,6 +59,13 @@ export default async function SettingsPage() {
           Copy limits
         </h2>
         {settings && <SettingsForm initial={settings} />}
+      </section>
+
+      <section aria-labelledby="telegram-title" className="card mt-6 px-4 py-5 sm:px-6 sm:py-6">
+        <h2 id="telegram-title" className="mb-4 font-display text-2xl">
+          Telegram alerts
+        </h2>
+        <TelegramConnect linked={settings?.telegramLinked ?? false} configured={isTelegramConfigured()} />
       </section>
 
       <section aria-labelledby="following-title" className="card mt-6 overflow-hidden">

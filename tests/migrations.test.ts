@@ -168,4 +168,39 @@ describe("supabase migrations", () => {
       await expect(db.query(ins, [u.rows[0].id, t.rows[0].id])).rejects.toThrow(/unique|duplicate/);
     });
   });
+  it("link_telegram_chat is single-use, honours expiry, keeps chats unique (service_role only)", async () => {
+    for (const role of ["anon", "authenticated"]) {
+      await expect(asRole(role, () => db.query(`select public.link_telegram_chat('h', 1)`))).rejects.toThrow(/permission denied/);
+      await expect(asRole(role, () => db.query(`select * from public.alert_subscriptions()`))).rejects.toThrow(/permission denied/);
+    }
+    await asRole("service_role", async () => {
+      const a = (await db.query<{ id: string }>(`insert into public.users (wallet) values ('tgA') returning id`)).rows[0].id;
+      const b = (await db.query<{ id: string }>(`insert into public.users (wallet, alerts_enabled) values ('tgB', false) returning id`)).rows[0].id;
+      await db.query(`insert into public.telegram_link_codes (code, user_id, expires_at) values ('hA', $1, now() + interval '10 minutes')`, [a]);
+      await db.query(`insert into public.telegram_link_codes (code, user_id, expires_at) values ('hB', $1, now() + interval '10 minutes')`, [b]);
+      await db.query(`insert into public.telegram_link_codes (code, user_id, expires_at) values ('hOld', $1, now() - interval '1 minute')`, [b]);
+      const link = (h: string, chat: number) =>
+        db.query<{ u: string | null }>(`select public.link_telegram_chat($1, $2) as u`, [h, chat]).then((r) => r.rows[0].u);
+
+      expect(await link("hA", 555)).toBe(a);
+      expect(await link("hA", 555)).toBeNull(); // single use
+      expect(await link("hOld", 556)).toBeNull(); // expired
+      expect((await db.query(`select 1 from public.telegram_link_codes where code = 'hOld'`)).rows).toHaveLength(0);
+      // Same chat linked by another user moves to them; alerts are switched on.
+      expect(await link("hB", 555)).toBe(b);
+      const rows = (await db.query<{ wallet: string; telegram_chat_id: string | null; alerts_enabled: boolean }>(
+        `select wallet, telegram_chat_id, alerts_enabled from public.users where wallet in ('tgA','tgB') order by wallet`,
+      )).rows;
+      expect(rows.map((r) => [r.wallet, r.telegram_chat_id === null ? null : Number(r.telegram_chat_id), r.alerts_enabled])).toEqual([
+        ["tgA", null, true],
+        ["tgB", 555, true],
+      ]);
+      await expect(db.query(`update public.users set telegram_chat_id = 555 where id = $1`, [a])).rejects.toThrow(/unique|duplicate/);
+
+      await db.query(`insert into public.follows (user_id, leader_wallet) values ($1, 'leaderX'), ($2, 'leaderX')`, [a, b]);
+      await db.query(`update public.users set alerts_enabled = false where id = $1`, [a]);
+      const subs = (await db.query<{ user_id: string }>(`select user_id from public.alert_subscriptions() where leader_wallet = 'leaderX'`)).rows;
+      expect(subs.map((r) => r.user_id)).toEqual([b]);
+    });
+  });
 });

@@ -6,11 +6,11 @@ import "server-only";
 import { getAuthDeps } from "./auth";
 import type { DataStore } from "./data-store";
 import { supabaseDataStore } from "./data-store-supabase";
-import { isMockMode } from "./env";
+import { getAppOrigin, isMockMode } from "./env";
 import { getSharedMemoryDataStore } from "./mock/data-store-memory";
 import * as panta from "./panta";
 import { getMarketCreator } from "./solana";
-import { runLeaderboardSync, type SyncDeps } from "./sync";
+import { runLeaderboardSync, type AlertDeps, type SyncDeps } from "./sync";
 import type { UserDeps } from "./user-core";
 
 export function getDataStore(): DataStore {
@@ -49,4 +49,18 @@ export async function ensureMockData(): Promise<void> {
     throw err;
   });
   await g.__copycallMockSync;
+}
+
+/** Deps for the alerts job. `send` is null when Telegram isn't configured (alerts are logged). */
+export async function getAlertDeps(): Promise<AlertDeps> {
+  const tg = await import("./telegram");
+  return {
+    store: getDataStore(),
+    panta: { getWalletTrades: panta.getWalletTrades, getMarket: panta.getMarket },
+    getMarketCreator,
+    send: tg.isTelegramConfigured() ? tg.sendTelegramMessage : null,
+    appOrigin: getAppOrigin(),
+    mock: isMockMode(),
+    log: (m) => console.info(`[alerts] ${m}`),
+  };
 }

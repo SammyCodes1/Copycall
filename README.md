@@ -49,10 +49,11 @@ Phantom/Solflare extension (it only signs a text message; nothing is sent on-cha
 | `npm run dev` | Dev server |
 | `npm run build` / `npm start` | Production build / serve |
 | `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript) |
-| `npm test` | Vitest: auth, boot guard, Panta schemas/client, stats, SQL migrations (in-process Postgres via PGlite) |
+| `npm test` | Vitest: auth, boot guard, Panta schemas/client, stats, sync, leaderboard, follow/settings, Telegram/alerts, SQL migrations (in-process Postgres via PGlite) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run check:bundle` | After a build, scans `.next/static` for secret names, `pk_` prefixes and secret values |
 | `node scripts/gen-fixtures.mjs` | Regenerates the deterministic mock fixtures |
+| `node --env-file=.env.local scripts/telegram-set-webhook.mjs` | Registers the Telegram webhook with `secret_token` (`--info` shows the current one). Never prints the token |
 
 ## Environment variables
 
@@ -69,7 +70,55 @@ values, which the app does not currently read (the browser never queries Supabas
 | `APP_URL` | Exact origin, e.g. `https://copycall.example`; used for the sign-in domain and the Origin check |
 | `MOCK_PANTA` | `true` = fixtures. **The app refuses to build/boot if `MOCK_PANTA=true` and `VERCEL_ENV=production`.** |
 | `MIN_RESOLVED_CALLS` | Default 5 |
-| `PANTA_PROGRAM_IDS`, `TELEGRAM_*`, `CRON_SECRET` | Used from batch 2 |
+| `CRON_SECRET` | >= 16 chars (use 32+). Cron routes need `Authorization: Bearer <CRON_SECRET>`; query-string secrets are refused |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` | Both needed for Telegram. If either is missing, alerts are written to the server log instead |
+| `PANTA_PROGRAM_IDS` | Used by transaction validation (later batch) |
+
+## Batch 2: sync, leaderboard, follow, alerts
+
+**Routes**
+
+| Route | Auth | What it does |
+| - | - | - |
+| `GET /api/cron/leaderboard` | Bearer `CRON_SECRET` | Pages markets, pulls trade tapes (upsert, deduped by signature), looks up market creators, refreshes positions and `trader_stats` |
+| `GET /api/cron/alerts` | Bearer `CRON_SECRET` | Polls followed wallets' trades and creates/sends alerts for new buys |
+| `GET /api/leaderboard?limit=` | public | Ranked wallets with >= `MIN_RESOLVED_CALLS` resolved calls |
+| `GET /api/trader/[wallet]` | public | Stats, open positions, recent calls (400 if not a base58 pubkey) |
+| `POST/DELETE /api/follow` | session + Origin | `{ "wallet": "..." }` |
+| `GET/PUT /api/settings` | session (+ Origin on PUT) | Max stake (USDC), slippage (default 200 bps, hard max 500), alerts on/off |
+| `POST /api/telegram/link` | session + Origin | One-time code (10 min) and `https://t.me/<bot>?start=<code>` |
+| `POST /api/telegram/webhook` | `X-Telegram-Bot-Api-Secret-Token` | `/start <code>` links the chat, `/stop` pauses alerts |
+
+**Cron schedule** (`vercel.json`): alerts every 2 minutes, leaderboard every 15 minutes.
+Sub-daily crons need a Vercel Pro plan; on Hobby, call the routes from any scheduler with the
+Bearer header. Vercel sends `Authorization: Bearer $CRON_SECRET` automatically when the env var is set.
+
+**Panta rate limits.** Panta limits requests per endpoint family (docs: errors guide). `lib/panta.ts`
+keeps each family under its limit per instance: read 100/min (limit 120), positions 50 (60),
+quote 25 (30), build 16 (20), register 32 (40). It pauses a family when `X-RateLimit-Remaining`
+hits 0 and backs off on 429. Each cron run also has its own call budget and stops a phase
+early on a 429.
+
+**Data notes.** Panta trade rows carry YES/NO amounts but no side field, so side is derived
+from the amounts (rows with both or neither are skipped) and only `isPrimary` rows count as buys.
+There is no market outcome field; outcomes come from resolved positions. `marketId` equals the
+market address. Market creators come from Solana (`lib/solana.ts`, fee payer of the market
+account's oldest transaction). This is a heuristic, so it is always shown as **unverified**.
+
+**Telegram setup**
+
+1. Create a bot with @BotFather and put the token in `TELEGRAM_BOT_TOKEN`.
+2. Generate `TELEGRAM_WEBHOOK_SECRET` (`node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`).
+3. Deploy, then run `node --env-file=.env.local scripts/telegram-set-webhook.mjs` (needs an https `APP_URL`).
+4. In Settings, press **Connect Telegram**, open the link and press Start.
+
+Alerts are plain text, titles are cut to 120 characters and made non-clickable, and the only
+link is `APP_URL/copy/<trade id>`, so amounts and sides never go in a URL. Alerts can lag a few minutes.
+
+**Mock demo (no accounts):** sign in, follow a trader from the leaderboard, then run
+`curl -H "Authorization: Bearer $CRON_SECRET" localhost:3000/api/cron/alerts` after the next
+minute. Every fixture wallet makes one simulated buy per minute, and the alert shows up in the server log
+(`alert (Telegram not configured)`) because Telegram isn't configured.
 
 ## Real mode setup (Supabase)
 
@@ -143,6 +192,7 @@ Panta API Terms require.
   [@solana/web3.js v1](https://github.com/solana-labs/solana-web3.js),
   [@solana/wallet-adapter](https://github.com/anza-xyz/wallet-adapter) (react, base, phantom, solflare),
   [@supabase/supabase-js](https://github.com/supabase/supabase-js),
+  [grammY](https://grammy.dev) (Telegram bot),
   [server-only](https://www.npmjs.com/package/server-only),
   [Vitest](https://vitest.dev),
   [PGlite](https://github.com/electric-sql/pglite) (tests),

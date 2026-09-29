@@ -5,6 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type {
+  AlertStatus,
   DataStore,
   StoredMarket,
   StoredPosition,
@@ -27,6 +28,8 @@ export type MemoryState = {
   stats: Map<string, StoredStats>; // by wallet
   follows: Map<string, Map<string, number>>; // userId -> leader wallet -> createdAt
   settings: Map<string, Omit<UserSettings, "telegramLinked"> & { telegramChatId: number | null }>; // by userId
+  linkCodes: Map<string, { userId: string; expiresAt: number }>; // by sha256(code)
+  alerts: Map<string, { id: string; userId: string; tradeId: string; status: AlertStatus; sentAt: number | null }>; // by user|trade
 };
 
 /** users-table defaults (see migration 0001). */
@@ -40,6 +43,8 @@ export function createMemoryState(): MemoryState {
     stats: new Map(),
     follows: new Map(),
     settings: new Map(),
+    linkCodes: new Map(),
+    alerts: new Map(),
   };
 }
 
@@ -209,6 +214,59 @@ export function createMemoryDataStore(s: MemoryState = createMemoryState()): Dat
       if (u.slippageBps < 0 || u.slippageBps > 500) throw new Error("slippage_bps check violated"); // mirrors the DB check
       Object.assign(userRow(userId), u);
       return view(userId);
+    },
+
+    async createLinkCode(userId, codeHash, expiresAt) {
+      for (const [k, v] of s.linkCodes) if (v.userId === userId) s.linkCodes.delete(k);
+      s.linkCodes.set(codeHash, { userId, expiresAt });
+    },
+    async linkTelegramChat(codeHash, chatId) {
+      const row = s.linkCodes.get(codeHash);
+      s.linkCodes.delete(codeHash); // single use, even when expired
+      if (!row || row.expiresAt <= Math.floor(Date.now() / 1000)) return null;
+      for (const [id, u] of s.settings) if (u.telegramChatId === chatId && id !== row.userId) u.telegramChatId = null;
+      Object.assign(userRow(row.userId), { telegramChatId: chatId, alertsEnabled: true });
+      return row.userId;
+    },
+    async pauseAlertsForChat(chatId) {
+      let n = 0;
+      for (const u of s.settings.values()) {
+        if (u.telegramChatId === chatId && u.alertsEnabled) {
+          u.alertsEnabled = false;
+          n++;
+        }
+      }
+      return n;
+    },
+
+    async alertSubscriptions() {
+      const out = [];
+      for (const [userId, m] of s.follows) {
+        const u = userRow(userId);
+        if (!u.alertsEnabled) continue;
+        for (const [leaderWallet, followedAt] of m) out.push({ userId, leaderWallet, followedAt, chatId: u.telegramChatId });
+      }
+      return out;
+    },
+    async tradesBySignatures(sigs) {
+      return sigs.flatMap((sig) => {
+        const t = s.trades.get(sig);
+        return t ? [{ ...t }] : [];
+      });
+    },
+    async createAlerts(rows) {
+      const out = [];
+      for (const r of rows) {
+        const key = `${r.userId}|${r.tradeId}`;
+        if (s.alerts.has(key)) continue; // UNIQUE (user_id, trade_id)
+        const a = { id: randomUUID(), ...r, status: "pending" as AlertStatus, sentAt: null };
+        s.alerts.set(key, a);
+        out.push({ id: a.id, userId: r.userId, tradeId: r.tradeId });
+      }
+      return out;
+    },
+    async setAlertStatus(id, status, sentAt) {
+      for (const a of s.alerts.values()) if (a.id === id) Object.assign(a, { status, sentAt });
     },
   };
 }

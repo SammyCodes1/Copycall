@@ -53,6 +53,15 @@ export type UserSettings = {
 
 export type SettingsUpdate = Pick<UserSettings, "maxStakeUsdc" | "slippageBps" | "alertsEnabled">;
 
+export type AlertSubscription = {
+  userId: string;
+  leaderWallet: string;
+  followedAt: number;
+  chatId: number | null; // null = Telegram not linked
+};
+
+export type AlertStatus = "pending" | "sent" | "logged" | "failed" | "skipped";
+
 export interface DataStore {
   // ---- markets
   /** Insert or update id/address/title/status. Never touches outcome or creator fields. */
@@ -110,4 +119,20 @@ export interface DataStore {
   // ---- settings (users row)
   getSettings(userId: string): Promise<UserSettings | null>;
   updateSettings(userId: string, s: SettingsUpdate): Promise<UserSettings>;
+
+  // ---- Telegram linking (codes are stored as sha256 hex, never in clear)
+  /** Replace any previous code for this user with a new one. */
+  createLinkCode(userId: string, codeHash: string, expiresAtSec: number): Promise<void>;
+  /** Atomically consume a code (single use, unexpired) and link the chat. Returns the user id or null. */
+  linkTelegramChat(codeHash: string, chatId: number): Promise<string | null>;
+  /** /stop: turn alerts off for the user(s) linked to this chat. Returns how many. */
+  pauseAlertsForChat(chatId: number): Promise<number>;
+
+  // ---- alerts
+  /** Follows of users with alerts enabled. */
+  alertSubscriptions(): Promise<AlertSubscription[]>;
+  tradesBySignatures(signatures: string[]): Promise<StoredTrade[]>;
+  /** Create alerts, skipping (user, trade) pairs that already exist. Returns only new ones. */
+  createAlerts(rows: { userId: string; tradeId: string }[]): Promise<{ id: string; userId: string; tradeId: string }[]>;
+  setAlertStatus(id: string, status: AlertStatus, sentAtSec: number | null): Promise<void>;
 }
