@@ -1,4 +1,5 @@
-import type { PreviewRow } from "@/lib/leaderboard-preview";
+import Link from "next/link";
+import type { LeaderRow } from "@/lib/view-types";
 import { CreatorFlag } from "./CreatorFlag";
 import { StreakTicks } from "./StreakTicks";
 import { ago, shortAddr } from "./format";
@@ -10,18 +11,21 @@ const rankLabel = (n: number) => String(n).padStart(2, "0");
 /**
  * Leaderboard. Desktop: a real <table> with right-aligned mono numbers.
  * Mobile: a purpose-built two-line row (not a squashed table).
- * `sample` labels fixture data honestly.
+ * `sample` labels fixture data honestly; otherwise `updatedLabel` says how
+ * fresh the data is (Panta Terms 8: identify delayed information).
  */
 export function LeaderboardTable({
   rows,
   nowSec,
   sample,
   minResolved,
+  updatedLabel,
 }: {
-  rows: PreviewRow[];
+  rows: LeaderRow[];
   nowSec: number;
   sample?: boolean;
   minResolved: number;
+  updatedLabel?: string;
 }) {
   return (
     <section aria-labelledby="lb-title" className="card overflow-hidden">
@@ -34,11 +38,13 @@ export function LeaderboardTable({
             Ranked by hit rate on resolved calls. Minimum <span className="num text-fg">{minResolved}</span> resolved.
           </p>
         </div>
-        {sample && <Tag>Sample data</Tag>}
+        {sample ? <Tag>Sample data</Tag> : updatedLabel && <p className="label text-fg-subtle">{updatedLabel}</p>}
       </div>
 
       {rows.length === 0 ? (
-        <p className="px-6 py-12 text-center text-fg-muted">No traders qualify yet.</p>
+        <p className="px-6 py-12 text-center text-fg-muted">
+          No traders qualify yet. A wallet needs {minResolved} resolved calls to be ranked.
+        </p>
       ) : (
         <>
           {/* Desktop / tablet */}
@@ -77,9 +83,14 @@ export function LeaderboardTable({
                   </td>
                   <td className="py-3.5">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <span className="num text-fg" title={r.wallet}>
+                      <Link
+                        href={`/trader/${r.wallet}`}
+                        className="num rounded-[2px] text-fg underline-offset-4 hover:text-brand-300 hover:underline"
+                        title={r.wallet}
+                      >
                         {shortAddr(r.wallet)}
-                      </span>
+                        <span className="sr-only">, view profile</span>
+                      </Link>
                       {r.creatorTradeCount > 0 && (
                         <CreatorFlag count={r.creatorTradeCount} verified={r.creatorVerified} />
                       )}
@@ -106,12 +117,22 @@ export function LeaderboardTable({
           {/* Phone */}
           <ol className="divide-y divide-line sm:hidden">
             {rows.map((r) => (
-              <li key={r.wallet} className="grid grid-cols-[2rem_1fr_auto] gap-x-2 px-4 py-3.5">
+              <li
+                key={r.wallet}
+                className="relative grid grid-cols-[2rem_1fr_auto] gap-x-2 px-4 py-3.5 transition-colors active:bg-white/[0.03]"
+              >
                 <span className={cn("num pt-0.5 text-sm", r.rank <= 3 ? "text-brand-300" : "text-fg-subtle")}>
                   {rankLabel(r.rank)}
                 </span>
                 <div className="min-w-0">
-                  <p className="num text-[15px] text-fg">{shortAddr(r.wallet)}</p>
+                  {/* Stretched link: the whole row is the tap target */}
+                  <Link
+                    href={`/trader/${r.wallet}`}
+                    className="num text-[15px] text-fg after:absolute after:inset-0 after:content-['']"
+                  >
+                    {shortAddr(r.wallet)}
+                    <span className="sr-only">, view profile</span>
+                  </Link>
                   <div className="mt-2 flex items-center gap-3">
                     <StreakTicks results={r.streak} />
                     <span className="num text-xs text-fg-subtle">

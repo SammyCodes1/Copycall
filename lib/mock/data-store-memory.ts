@@ -115,6 +115,46 @@ export function createMemoryDataStore(s: MemoryState = createMemoryState()): Dat
     async upsertTraderStats(row) {
       s.stats.set(row.wallet, { ...row });
     },
+
+    async leaderboard(minResolved, limit) {
+      return [...s.stats.values()]
+        .filter((x) => x.resolvedCalls >= minResolved)
+        .sort((a, b) => b.hitRate - a.hitRate || b.resolvedCalls - a.resolvedCalls || a.wallet.localeCompare(b.wallet))
+        .slice(0, limit)
+        .map((x) => ({ ...x }));
+    },
+    async getTraderStats(wallet) {
+      const x = s.stats.get(wallet);
+      return x ? { ...x } : null;
+    },
+    async positionsForWallet(wallet) {
+      return (s.positions.get(wallet) ?? []).map((p) => ({ ...p }));
+    },
+    async getMarkets(ids) {
+      return ids.flatMap((id) => {
+        const m = s.markets.get(id);
+        return m
+          ? [{ id: m.id, address: m.address, title: m.title, status: m.status, outcome: m.outcome, creatorWallet: m.creatorWallet, creatorVerified: m.creatorVerified }]
+          : [];
+      });
+    },
+    async recentTrades(limit) {
+      return [...s.trades.values()].sort(byTimeDesc).slice(0, limit).map((t) => ({ ...t }));
+    },
+    async counts() {
+      const markets = [...s.markets.values()];
+      return {
+        markets: markets.length,
+        callers: s.stats.size,
+        trades: s.trades.size,
+        resolved: markets.filter((m) => m.status === "resolved").length,
+      };
+    },
+    async lastSyncedAt() {
+      let max: number | null = null;
+      for (const x of s.stats.values()) max = Math.max(max ?? 0, x.updatedAt);
+      return max;
+    },
   };
 }
 

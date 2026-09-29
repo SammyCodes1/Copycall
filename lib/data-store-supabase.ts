@@ -242,4 +242,81 @@ export const supabaseDataStore: DataStore = {
       );
     if (error) fail("upsert trader stats");
   },
+
+  async leaderboard(minResolved, limit) {
+    const { data, error } = await getDb()
+      .from("trader_stats")
+      .select(STATS_COLUMNS)
+      .gte("resolved_calls", minResolved)
+      .order("hit_rate", { ascending: false })
+      .order("resolved_calls", { ascending: false })
+      .order("wallet")
+      .limit(limit);
+    if (error) fail("leaderboard");
+    return ((data ?? []) as StatsRow[]).map(toStoredStats);
+  },
+
+  async getTraderStats(wallet) {
+    const { data, error } = await getDb().from("trader_stats").select(STATS_COLUMNS).eq("wallet", wallet).maybeSingle();
+    if (error) fail("trader stats");
+    return data ? toStoredStats(data as StatsRow) : null;
+  },
+
+  async positionsForWallet(wallet) {
+    const { data, error } = await getDb()
+      .from("positions")
+      .select("market_id, side, shares, phase, outcome, claimable, claimed")
+      .eq("wallet", wallet);
+    if (error) fail("positions");
+    return (data ?? []).map((r) => ({
+      marketId: r.market_id as string,
+      side: r.side as TradeSide,
+      shares: String(r.shares),
+      phase: r.phase as Phase,
+      outcome: (r.outcome as Side | null) ?? null,
+      claimable: !!r.claimable,
+      claimed: !!r.claimed,
+    }));
+  },
+
+  async getMarkets(ids) {
+    if (!ids.length) return [];
+    const { data, error } = await getDb().from("markets").select(MARKET_COLUMNS).in("id", ids);
+    if (error) fail("markets");
+    return ((data ?? []) as MarketRow[]).map(toStoredMarket);
+  },
+
+  async recentTrades(limit) {
+    const { data, error } = await getDb()
+      .from("trades")
+      .select(TRADE_COLUMNS)
+      .order("block_time", { ascending: false, nullsFirst: false })
+      .limit(limit);
+    if (error) fail("recent trades");
+    return ((data ?? []) as TradeRow[]).map(toStoredTrade);
+  },
+
+  async counts() {
+    const db = getDb();
+    const head = { count: "exact" as const, head: true };
+    const [m, c, t, r] = await Promise.all([
+      db.from("markets").select("id", head),
+      db.from("trader_stats").select("wallet", head),
+      db.from("trades").select("id", head),
+      db.from("markets").select("id", head).eq("status", "resolved"),
+    ]);
+    if (m.error || c.error || t.error || r.error) fail("counts");
+    return { markets: m.count ?? 0, callers: c.count ?? 0, trades: t.count ?? 0, resolved: r.count ?? 0 };
+  },
+
+  async lastSyncedAt() {
+    const { data, error } = await getDb()
+      .from("trader_stats")
+      .select("updated_at")
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) fail("last synced");
+    return data ? sec(data.updated_at as string) : null;
+  },
 };

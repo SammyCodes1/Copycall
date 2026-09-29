@@ -77,4 +77,17 @@ export interface DataStore {
   /** Replace a wallet's positions snapshot atomically. */
   replacePositions(wallet: string, rows: StoredPosition[]): Promise<void>;
   upsertTraderStats(row: StoredStats): Promise<void>;
+
+  // ---- reads for pages and public API (never call Panta on a page load)
+  /** Wallets with >= minResolved resolved calls, by hit rate, then resolved calls, then wallet. */
+  leaderboard(minResolved: number, limit: number): Promise<StoredStats[]>;
+  getTraderStats(wallet: string): Promise<StoredStats | null>;
+  positionsForWallet(wallet: string): Promise<StoredPosition[]>;
+  getMarkets(ids: string[]): Promise<StoredMarket[]>;
+  /** Newest stored trades across all wallets (for the tape). */
+  recentTrades(limit: number): Promise<StoredTrade[]>;
+  /** Headline counts. callers = wallets with stats. */
+  counts(): Promise<{ markets: number; callers: number; trades: number; resolved: number }>;
+  /** Most recent trader_stats refresh (unix seconds), or null before the first sync. */
+  lastSyncedAt(): Promise<number | null>;
 }

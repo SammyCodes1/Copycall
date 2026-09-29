@@ -13,8 +13,8 @@ export function Header({ sessionWallet }: { sessionWallet: string | null }) {
           </Link>
           <nav aria-label="Sections" className="hidden items-center gap-1 md:flex">
             {[
-              ["#leaderboard", "Leaderboard"],
-              ["#anatomy", "How a copy works"],
+              ["/#leaderboard", "Leaderboard"],
+              ["/#anatomy", "How a copy works"],
             ].map(([href, label]) => (
               <a
                 key={href}

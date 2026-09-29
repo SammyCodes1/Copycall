@@ -4,14 +4,10 @@ import { Tape } from "@/components/Tape";
 import { WalletButton } from "@/components/WalletButton";
 import { Tag } from "@/components/ui/Badge";
 import { getSession } from "@/lib/auth";
-import { getMinResolvedCalls } from "@/lib/env";
-import {
-  FIXTURE_NOW,
-  getLeaderboardPreview,
-  getSampleCopy,
-  getSampleCounts,
-  getSampleTape,
-} from "@/lib/leaderboard-preview";
+import { isMockMode } from "@/lib/env";
+import { FIXTURE_NOW, getSampleCopy } from "@/lib/leaderboard-preview";
+import { displayNowSec, getCounts, getLeaderboard, getTape } from "@/lib/queries";
+import { ago } from "@/components/format";
 
 const ANATOMY = [
   {
@@ -33,15 +29,17 @@ const ANATOMY = [
 
 export default async function Home() {
   const session = await getSession();
-  const rows = getLeaderboardPreview(8);
-  const tape = getSampleTape(14);
-  const copy = getSampleCopy();
-  const counts = getSampleCounts();
-  const minResolved = getMinResolvedCalls();
+  const mock = isMockMode();
+  const [{ rows, minResolved, updatedAt }, tape, counts] = await Promise.all([getLeaderboard(8), getTape(14), getCounts()]);
+  // Mock: fixture clock, and everything is labelled "Sample data".
+  // Real: data is from our last sync; say how fresh it is (Panta Terms 8).
+  const nowSec = displayNowSec();
+  const updatedLabel = updatedAt ? `Updated ${ago(updatedAt, nowSec)} ago` : "Waiting for first sync";
+  const copy = getSampleCopy(); // illustration only, always labelled "Sample data"
 
   return (
     <>
-      <Tape items={tape} nowSec={FIXTURE_NOW} />
+      <Tape items={tape} nowSec={nowSec} sample={mock} />
 
       <div className="mx-auto max-w-[76rem] px-4 sm:px-6">
         {/* Hero: headline + the leaderboard as the centrepiece */}
@@ -68,14 +66,14 @@ export default async function Home() {
           </div>
         </section>
 
-        {/* Stats strip. Fixture counts, so it is labelled like the tape and leaderboard
-            (Panta Terms 5: never present simulated data as live). */}
+        {/* Stats strip. In mock mode these are fixture counts, labelled like the tape and
+            leaderboard (Panta Terms 5: never present simulated data as live). */}
         <section aria-labelledby="stats-title" className="mb-4 sm:mb-6">
           <div className="flex items-center justify-between gap-3 pb-2">
             <h2 id="stats-title" className="label text-fg-subtle">
               Dataset
             </h2>
-            <Tag>Sample data</Tag>
+            {mock ? <Tag>Sample data</Tag> : <p className="label text-fg-subtle">{updatedLabel}</p>}
           </div>
           <dl className="grid grid-cols-3 border-y border-line sm:grid-cols-4">
             {[
@@ -100,10 +98,16 @@ export default async function Home() {
         </section>
 
         <div id="leaderboard" className="scroll-mt-20">
-          <LeaderboardTable rows={rows} nowSec={FIXTURE_NOW} sample minResolved={minResolved} />
+          <LeaderboardTable
+            rows={rows}
+            nowSec={nowSec}
+            sample={mock}
+            minResolved={minResolved}
+            updatedLabel={updatedLabel}
+          />
           <p className="mt-3 text-xs text-fg-subtle">
             Hit rate = resolved positions where the side matched the outcome ÷ resolved positions. No profit ranking:
-            Panta trade rows carry no price. Alerts can lag a few minutes.
+            Panta trade rows carry no price. Stats refresh every 15 minutes; alerts can lag a few minutes.
           </p>
         </div>
 
