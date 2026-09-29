@@ -12,7 +12,7 @@ export async function signedInUser() {
   const d = getAuthDeps();
   const { nonce, message } = await issueNonce(d, jsonRequest("/api/auth/nonce", { wallet: w.address }, headers));
   const res = await verifyLogin(d, jsonRequest("/api/auth/verify", { wallet: w.address, nonce, signature: w.sign(message) }, headers));
-  return { wallet: w.address, userId: res.userId, token: res.token, cookie: `${SESSION_COOKIE}=${res.token}` };
+  return { wallet: w.address, secretKey: w.secretKey, userId: res.userId, token: res.token, cookie: `${SESSION_COOKIE}=${res.token}` };
 }
 
 /** A request like the browser sends: JSON body, Origin, optional session cookie. */

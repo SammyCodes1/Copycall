@@ -416,6 +416,12 @@ export const supabaseDataStore: DataStore = {
     return ((data ?? []) as TradeRow[]).map(toStoredTrade);
   },
 
+  async getTradeById(id) {
+    const { data, error } = await getDb().from("trades").select(TRADE_COLUMNS).eq("id", id).maybeSingle();
+    if (error) fail("trade by id");
+    return data ? toStoredTrade(data as TradeRow) : null;
+  },
+
   async createAlerts(rows) {
     if (!rows.length) return [];
     // ON CONFLICT (user_id, trade_id) DO NOTHING RETURNING: overlapping runs can't double-send.

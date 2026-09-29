@@ -309,3 +309,26 @@ export const SettingsRequestSchema = z
   })
   .strict();
 export type SettingsRequest = z.infer<typeof SettingsRequestSchema>;
+
+// ---------- copy and claim flows (our own routes) ----------
+
+const Uuid = z.string().uuid();
+
+/** POST /api/copy/[tradeId]/build. Only the quote token: amount, side and market come from the server. */
+export const CopyBuildRequestSchema = z.object({ quoteToken: Uuid }).strict();
+
+/** POST /api/claim/build */
+export const ClaimBuildBodySchema = z.object({ marketId: PubkeySchema }).strict();
+
+/**
+ * POST /api/copy/confirm and /api/claim/confirm. Exactly one of:
+ *  - signedTransaction: the exact bytes we built, signed by the wallet (base64)
+ *  - signature: a retry for an already-broadcast transaction
+ *  - simulated: mock mode only
+ */
+export const ConfirmRequestSchema = z.union([
+  z.object({ orderId: Uuid, signedTransaction: z.string().min(100).max(1700).regex(/^[A-Za-z0-9+/]+={0,2}$/) }).strict(),
+  z.object({ orderId: Uuid, signature: SignatureSchema }).strict(),
+  z.object({ orderId: Uuid, simulated: z.literal(true) }).strict(),
+]);
+export type ConfirmRequest = z.infer<typeof ConfirmRequestSchema>;

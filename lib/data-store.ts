@@ -132,6 +132,8 @@ export interface DataStore {
   /** Follows of users with alerts enabled. */
   alertSubscriptions(): Promise<AlertSubscription[]>;
   tradesBySignatures(signatures: string[]): Promise<StoredTrade[]>;
+  /** One stored trade by our internal id (copy links carry only this). */
+  getTradeById(id: string): Promise<StoredTrade | null>;
   /** Create alerts, skipping (user, trade) pairs that already exist. Returns only new ones. */
   createAlerts(rows: { userId: string; tradeId: string }[]): Promise<{ id: string; userId: string; tradeId: string }[]>;
   setAlertStatus(id: string, status: AlertStatus, sentAtSec: number | null): Promise<void>;

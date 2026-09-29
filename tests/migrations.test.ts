@@ -203,4 +203,43 @@ describe("supabase migrations", () => {
       expect(subs.map((r) => r.user_id)).toEqual([b]);
     });
   });
+  it("complete_order is atomic and refuses reused signatures; copy tables are private", async () => {
+    for (const role of ["anon", "authenticated"]) {
+      for (const t of ["pending_orders", "claims", "api_cache"]) {
+        await expect(asRole(role, () => db.query(`select * from public.${t}`))).rejects.toThrow(/permission denied/);
+      }
+      await expect(asRole(role, () => db.query(`select public.complete_order(gen_random_uuid(), gen_random_uuid(), 's')`))).rejects.toThrow(/permission denied/);
+    }
+    await asRole("service_role", async () => {
+      const u = (await db.query<{ id: string }>(`insert into public.users (wallet) values ('copyW') returning id`)).rows[0].id;
+      await db.query(`insert into public.markets (id, address, title, status) values ('mC','mC','t','primary') on conflict do nothing`);
+      const t = (await db.query<{ id: string }>(`insert into public.trades (signature, market_id, wallet, side, shares) values ('leadSig','mC','L','YES',1) returning id`)).rows[0].id;
+      const hash = "a".repeat(64);
+      const mk = async (kind: string) =>
+        (
+          await db.query<{ id: string }>(
+            `insert into public.pending_orders (user_id, wallet, kind, leader_trade_id, market_id, side, amount_usdc, shares, message_hash, message_base64, expires_at)
+             values ($1, 'copyW', $2, $3, 'mC', 'YES', 5, 9.5, $4, 'AA==', now() + interval '90 seconds') returning id`,
+            [u, kind, kind === "copy" ? t : null, hash],
+          )
+        ).rows[0].id;
+      const complete = (o: string, sig: string, user = u) =>
+        db.query<{ r: string }>(`select public.complete_order($1, $2, $3) as r`, [o, user, sig]).then((r) => r.rows[0].r);
+
+      const a = await mk("copy");
+      const b = await mk("copy");
+      const c = await mk("claim");
+      expect(await complete(a, "sigA", "00000000-0000-0000-0000-000000000000")).toBe("not_pending"); // other user
+      expect(await complete(a, "sigA")).toBe("ok");
+      expect(await complete(a, "sigA")).toBe("already_confirmed");
+      expect(await complete(a, "sigOther")).toBe("not_pending");
+      expect(await complete(b, "sigA")).toBe("signature_used");
+      expect(await complete(c, "sigA")).toBe("signature_used");
+      expect(await complete(c, "sigC")).toBe("ok");
+      const copies = (await db.query<{ signature: string; status: string }>(`select signature, status from public.copies where user_id = $1`, [u])).rows;
+      expect(copies).toEqual([{ signature: "sigA", status: "confirmed" }]);
+      expect((await db.query(`select 1 from public.claims where signature = 'sigC'`)).rows).toHaveLength(1);
+      await expect(db.query(`update public.pending_orders set message_hash = 'nothex' where id = $1`, [b])).rejects.toThrow(/check/);
+    });
+  });
 });

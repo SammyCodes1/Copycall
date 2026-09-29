@@ -14,20 +14,24 @@ import marketsJson from "@/fixtures/markets.json";
 import positionsJson from "@/fixtures/positions.json";
 import tradesJson from "@/fixtures/trades.json";
 import { PantaError } from "../panta-error";
-import type {
-  PantaMarket,
-  PantaPosition,
-  PantaTradeRow,
-  Phase,
-  Side,
-} from "../schemas";
+import {
+  ATA_PROGRAM_ID,
+  COMPUTE_BUDGET_PROGRAM_ID,
+  SYSTEM_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  USDC_MINT,
+  associatedTokenAddress,
+  usdcToBase,
+} from "../solana-constants";
+import { anchorDiscriminator } from "../tx-guard";
+import { MOCK_PROGRAM_ID, getSharedMockChain, mockPositionPda, mockVault } from "./chain-mock";
+import type { PantaMarket, PantaPosition, PantaTradeRow, Phase, Side } from "../schemas";
 
 const markets = marketsJson as unknown as PantaMarket[];
 const trades = tradesJson as unknown as PantaTradeRow[];
 const positions = positionsJson as unknown as Record<string, PantaPosition[]>;
 
-/** Fake program id used in mock instructions (never a real program). */
-export const MOCK_PROGRAM_ID = "MockPanta1111111111111111111111111111111111";
+export { MOCK_PROGRAM_ID };
 
 function findMarket(marketId: string): PantaMarket {
   const m = markets.find((x) => x.marketId === marketId);
@@ -50,7 +54,12 @@ function toListRow(m: PantaMarket): PantaMarket {
 
 export function listMarkets(p: { status?: Phase; cursor?: string; limit: number }) {
   const filtered = p.status ? markets.filter((m) => m.phase === p.status) : markets;
-  const start = p.cursor ? Math.max(0, filtered.findIndex((m) => m.marketId === p.cursor)) : 0;
+  const start = p.cursor
+    ? Math.max(
+        0,
+        filtered.findIndex((m) => m.marketId === p.cursor),
+      )
+    : 0;
   const page = filtered.slice(start, start + p.limit);
   const next = filtered[start + p.limit];
   return { items: page.map(toListRow), nextCursor: next ? next.marketId : null };
@@ -104,7 +113,11 @@ export function getWalletTrades(wallet: string, limit: number) {
 }
 
 export function getPositions(wallet: string) {
-  return { wallet, positions: positions[wallet] ?? [] };
+  // Fixture traders keep their fixture positions. Any other wallet (a demo
+  // user) gets positions from the mock chain: its simulated copies plus one
+  // resolved win and one loss so the claim flow is demoable.
+  const fixture = positions[wallet];
+  return { wallet, positions: fixture ?? getSharedMockChain().positionsOf(wallet) };
 }
 
 // ---- simulated primary buy sessions ----
@@ -159,10 +172,51 @@ export function quotePrimaryOrder(req: { wallet: string; marketId: string; side:
   };
 }
 
+// ---- simulated instructions (same shape as real Panta builds) ----
+
+const ix = (programId: string, data: Buffer, accounts: [string, boolean, boolean][]) => ({
+  programId,
+  data: data.toString("base64"),
+  accounts: accounts.map(([pubkey, isSigner, isWritable]) => ({ pubkey, isSigner, isWritable })),
+});
+const u32 = (n: number) => {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(n);
+  return b;
+};
+const u64 = (n: bigint) => {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(n);
+  return b;
+};
+const computeBudget = () => [
+  ix(COMPUTE_BUDGET_PROGRAM_ID, Buffer.concat([Buffer.from([2]), u32(200_000)]), []),
+  ix(COMPUTE_BUDGET_PROGRAM_ID, Buffer.concat([Buffer.from([3]), u64(5_000n)]), []),
+];
+const createUsdcAta = (wallet: string, ata: string) =>
+  ix(ATA_PROGRAM_ID, Buffer.from([1]), [
+    [wallet, true, true],
+    [ata, false, true],
+    [wallet, false, false],
+    [USDC_MINT, false, false],
+    [SYSTEM_PROGRAM_ID, false, false],
+    [TOKEN_PROGRAM_ID, false, false],
+  ]);
+/** A fake but plausible blockhash (base58 of 32 bytes). */
+const mockBlockhash = () => bs58.encode(randomBytes(32));
+
 export function buildPrimaryOrder(req: { quoteId: string; wallet: string; maxSlippageBps: number }) {
   const q = quotes.get(req.quoteId);
   if (!q || q.expiresAtMs < Date.now()) throw new PantaError(400, "QUOTE_EXPIRED", "Quote expired (mock)");
   if (q.wallet !== req.wallet) throw new PantaError(401, "UNAUTHORIZED", "Wallet does not match quote (mock)");
+  const ata = associatedTokenAddress(q.wallet, USDC_MINT);
+  const data = Buffer.concat([
+    anchorDiscriminator("primary_order_usdc"),
+    u64(usdcToBase(q.amountUsdc)),
+    Buffer.from([q.side === "yes" ? 1 : 0]),
+    u64(usdcToBase(q.shares)),
+    Buffer.from([req.maxSlippageBps & 0xff, req.maxSlippageBps >> 8]),
+  ]);
   return {
     orderId: `ord_mock_${randomUUID()}`,
     quoteId: q.quoteId,
@@ -174,18 +228,22 @@ export function buildPrimaryOrder(req: { quoteId: string; wallet: string; maxSli
     feeUsdc: q.feeUsdc,
     status: "built",
     instructions: [
-      {
-        programId: MOCK_PROGRAM_ID,
-        data: Buffer.from("mock_primary_order_usdc").toString("base64"),
-        accounts: [
-          { pubkey: q.wallet, isSigner: true, isWritable: true },
-          { pubkey: q.marketId, isSigner: false, isWritable: true },
-        ],
-      },
+      ...computeBudget(),
+      createUsdcAta(q.wallet, ata),
+      ix(MOCK_PROGRAM_ID, data, [
+        [q.wallet, true, true],
+        [q.marketId, false, true],
+        [ata, false, true],
+        [mockVault(q.marketId), false, true],
+        [USDC_MINT, false, false],
+        [TOKEN_PROGRAM_ID, false, false],
+        [SYSTEM_PROGRAM_ID, false, false],
+        [mockPositionPda(q.marketId, q.wallet, q.side), false, true],
+      ]),
     ],
-    derived: { event: q.marketId },
-    recentBlockhash: bs58.encode(randomBytes(32)),
-    lastValidBlockHeight: 1,
+    derived: { event: q.marketId, vaultAuthority: mockVault(q.marketId) },
+    recentBlockhash: mockBlockhash(),
+    lastValidBlockHeight: 1_000_000,
     expiresAt: new Date(Date.now() + 120_000).toISOString(),
     blockhashExpiryHintSec: 60,
   };
@@ -193,27 +251,53 @@ export function buildPrimaryOrder(req: { quoteId: string; wallet: string; maxSli
 
 export function buildClaim(req: { wallet: string; marketId: string }) {
   findMarket(req.marketId);
-  const pos = (positions[req.wallet] ?? []).find((p) => p.marketId === req.marketId && p.claimable);
+  const pos = getPositions(req.wallet).positions.find((p) => p.marketId === req.marketId && p.claimable);
   if (!pos || !pos.outcome) throw new PantaError(400, "NOT_CLAIMABLE", "Nothing to claim (mock)");
+  const ata = associatedTokenAddress(req.wallet, USDC_MINT);
+  const data = Buffer.concat([anchorDiscriminator("claim_win_usdc"), u64(usdcToBase(pos.shares))]);
   return {
     wallet: req.wallet,
     marketId: req.marketId,
     outcome: pos.outcome.toUpperCase(),
     winningShares: pos.shares,
     instructions: [
-      {
-        programId: MOCK_PROGRAM_ID,
-        data: Buffer.from("mock_claim_win_usdc").toString("base64"),
-        accounts: [{ pubkey: req.wallet, isSigner: true, isWritable: true }],
-      },
+      computeBudget()[0],
+      createUsdcAta(req.wallet, ata),
+      ix(MOCK_PROGRAM_ID, data, [
+        [req.wallet, true, true],
+        [req.marketId, false, false],
+        [ata, false, true],
+        [mockVault(req.marketId), false, true],
+        [USDC_MINT, false, false],
+        [TOKEN_PROGRAM_ID, false, false],
+        [mockPositionPda(req.marketId, req.wallet, pos.side), false, true],
+      ]),
     ],
-    derived: {},
-    recentBlockhash: bs58.encode(randomBytes(32)),
-    lastValidBlockHeight: 1,
+    derived: {
+      positionPda: mockPositionPda(req.marketId, req.wallet, pos.side),
+      vaultAuthority: mockVault(req.marketId),
+    },
+    recentBlockhash: mockBlockhash(),
+    lastValidBlockHeight: 1_000_000,
   };
 }
 
+/** Like Panta: verify the signature on (mock) chain, fail closed, idempotent per signature. */
 export function reportTrade(req: { signature: string; wallet: string; marketId: string }) {
   findMarket(req.marketId);
-  return { signature: req.signature, status: "processed", marketId: req.marketId, wallet: req.wallet, kind: "buy" as const };
+  const chain = getSharedMockChain();
+  const landed = chain.state.landed.get(req.signature);
+  if (!landed) throw new PantaError(404, "TX_NOT_FOUND", "Signature not found (mock)");
+  if (landed.err) throw new PantaError(400, "TX_FAILED", "Transaction failed (mock)");
+  const k = chain.landedKind(req.signature);
+  if (!k || k.wallet !== req.wallet || k.marketId !== req.marketId)
+    throw new PantaError(400, "TX_MISMATCH", "Wrong wallet or market (mock)");
+  return {
+    signature: req.signature,
+    status: "processed",
+    marketId: req.marketId,
+    wallet: req.wallet,
+    side: k.side,
+    kind: k.kind,
+  };
 }

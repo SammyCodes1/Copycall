@@ -3,10 +3,13 @@ import "server-only";
  * Solana RPC helpers (server only). SOLANA_RPC_URL is a dedicated mainnet RPC
  * (Helius); its URL usually embeds an API key, so it never reaches the client.
  *
- * Batch 2 needs only getMarketCreator(). Transaction validation, broadcast and
- * confirmation arrive with the copy flow (step 9).
+ * getMarketCreator() for the creator flag, and `rpcChain` (simulate, broadcast,
+ * confirm, fetch) for the copy and claim flows. Validation rules live in
+ * lib/tx-guard.ts; this file only talks to the RPC.
  */
-import { Connection, PublicKey, type ConfirmedSignatureInfo } from "@solana/web3.js";
+import { Connection, PublicKey, type ConfirmedSignatureInfo, type VersionedTransaction } from "@solana/web3.js";
+import type { Chain, ConfirmationState } from "./chain";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "./solana-constants";
 import creatorsJson from "@/fixtures/creators.json";
 import { isMockMode, requireEnv } from "./env";
 
@@ -65,8 +68,87 @@ export async function getMarketCreator(marketAddress: string): Promise<CreatorLo
   }
   if (!oldest || before !== undefined) return null; // nothing found, or history too long to walk
 
-  const tx = await conn.getTransaction(oldest.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+  const tx = await conn.getTransaction(oldest.signature, {
+    maxSupportedTransactionVersion: 0,
+    commitment: "confirmed",
+  });
   if (!tx || tx.meta?.err) return null;
   const feePayer = tx.transaction.message.staticAccountKeys[0];
   return feePayer ? { creator: feePayer.toBase58(), verified: false } : null;
 }
+
+// ---------------------------------------------------------------- copy / claim flows
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Real chain access over SOLANA_RPC_URL. The browser never talks to the RPC. */
+export const rpcChain: Chain = {
+  async getTokenAccounts(owner) {
+    const conn = getConnection();
+    const pk = new PublicKey(owner);
+    const lists = await Promise.all(
+      [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) =>
+        conn.getTokenAccountsByOwner(pk, { programId: new PublicKey(programId) }, "confirmed"),
+      ),
+    );
+    return lists.flatMap((l) =>
+      l.value.map((a) => ({
+        pubkey: a.pubkey.toBase58(),
+        data: Buffer.from(a.account.data),
+        lamports: a.account.lamports,
+      })),
+    );
+  },
+
+  async getLamports(owner) {
+    return getConnection().getBalance(new PublicKey(owner), "confirmed");
+  },
+
+  async simulate(tx: VersionedTransaction, addresses: string[]) {
+    const res = await getConnection().simulateTransaction(tx, {
+      sigVerify: false,
+      replaceRecentBlockhash: false, // simulate the EXACT bytes we will hand to the wallet
+      commitment: "confirmed",
+      accounts: { encoding: "base64", addresses },
+    });
+    return {
+      err: res.value.err ?? null,
+      logs: res.value.logs ?? [],
+      accounts: (res.value.accounts ?? []).map((a) =>
+        a ? { data: Buffer.from(a.data[0], "base64"), lamports: a.lamports } : null,
+      ),
+    };
+  },
+
+  async send(raw) {
+    return getConnection().sendRawTransaction(raw, {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+      maxRetries: 3,
+    });
+  },
+
+  async waitForConfirmation(signature, lastValidBlockHeight, timeoutMs): Promise<ConfirmationState> {
+    const conn = getConnection();
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const { value } = await conn.getSignatureStatuses([signature], { searchTransactionHistory: true });
+      const st = value[0];
+      if (st?.err) return "failed";
+      if (st?.confirmationStatus === "confirmed" || st?.confirmationStatus === "finalized") return "confirmed";
+      if (lastValidBlockHeight !== null && (await conn.getBlockHeight("confirmed")) > lastValidBlockHeight)
+        return "expired";
+      await sleep(1000);
+    }
+    return "pending";
+  },
+
+  async getLandedTransaction(signature) {
+    const tx = await getConnection().getTransaction(signature, {
+      commitment: "confirmed",
+      maxSupportedTransactionVersion: 0,
+    });
+    if (!tx) return null;
+    return { err: tx.meta?.err ?? null, message: tx.transaction.message, signatures: tx.transaction.signatures };
+  },
+};

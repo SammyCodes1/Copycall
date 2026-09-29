@@ -6,6 +6,7 @@ export function testWallet() {
   const kp = nacl.sign.keyPair();
   return {
     address: bs58.encode(kp.publicKey),
+    secretKey: kp.secretKey,
     sign(message: string) {
       return bs58.encode(nacl.sign.detached(new TextEncoder().encode(message), kp.secretKey));
     },

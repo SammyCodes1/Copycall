@@ -254,6 +254,10 @@ export function createMemoryDataStore(s: MemoryState = createMemoryState()): Dat
         return t ? [{ ...t }] : [];
       });
     },
+    async getTradeById(id) {
+      for (const t of s.trades.values()) if (t.id === id) return { ...t };
+      return null;
+    },
     async createAlerts(rows) {
       const out = [];
       for (const r of rows) {
