@@ -2,6 +2,7 @@ import { CopyReview } from "@/components/CopyReview";
 import { LeaderboardTable } from "@/components/LeaderboardTable";
 import { Tape } from "@/components/Tape";
 import { WalletButton } from "@/components/WalletButton";
+import { Tag } from "@/components/ui/Badge";
 import { getSession } from "@/lib/auth";
 import { getMinResolvedCalls } from "@/lib/env";
 import {
@@ -67,26 +68,36 @@ export default async function Home() {
           </div>
         </section>
 
-        <dl className="mb-4 grid grid-cols-3 border-y border-line sm:mb-6 sm:grid-cols-4">
-          {[
-            ["Markets", counts.markets],
-            ["Callers", counts.callers],
-            ["Calls", counts.trades],
-            ["Resolved", counts.resolved],
-          ].map(([k, v], i) => (
-            <div
-              key={k}
-              className={
-                "flex flex-col gap-0.5 py-3 pr-3 " +
-                (i > 0 ? "border-l border-line pl-3 sm:pl-4 " : "") +
-                (i === 3 ? "hidden sm:flex" : "")
-              }
-            >
-              <dt className="label text-fg-subtle">{k}</dt>
-              <dd className="num text-lg text-fg">{v}</dd>
-            </div>
-          ))}
-        </dl>
+        {/* Stats strip. Fixture counts, so it is labelled like the tape and leaderboard
+            (Panta Terms 5: never present simulated data as live). */}
+        <section aria-labelledby="stats-title" className="mb-4 sm:mb-6">
+          <div className="flex items-center justify-between gap-3 pb-2">
+            <h2 id="stats-title" className="label text-fg-subtle">
+              Dataset
+            </h2>
+            <Tag>Sample data</Tag>
+          </div>
+          <dl className="grid grid-cols-3 border-y border-line sm:grid-cols-4">
+            {[
+              ["Markets", counts.markets],
+              ["Callers", counts.callers],
+              ["Calls", counts.trades],
+              ["Resolved", counts.resolved],
+            ].map(([k, v], i) => (
+              <div
+                key={k}
+                className={
+                  "flex flex-col gap-0.5 py-3 pr-3 " +
+                  (i > 0 ? "border-l border-line pl-3 sm:pl-4 " : "") +
+                  (i === 3 ? "hidden sm:flex" : "")
+                }
+              >
+                <dt className="label text-fg-subtle">{k}</dt>
+                <dd className="num text-lg text-fg">{v}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
 
         <div id="leaderboard" className="scroll-mt-20">
           <LeaderboardTable rows={rows} nowSec={FIXTURE_NOW} sample minResolved={minResolved} />
