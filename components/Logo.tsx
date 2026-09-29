@@ -7,7 +7,7 @@ export function Logo() {
         <rect x="6" y="4.5" width="2.5" height="11" rx="1" fill="#34c05f" />
         <rect x="11.5" y="10" width="2.5" height="5.5" rx="1" fill="#ff6b7a" />
       </svg>
-      <span className="text-[15px] font-semibold tracking-[-0.02em] text-fg">Copycall</span>
+      <span className="text-[15px] font-semibold tracking-[-0.02em] text-fg max-[359px]:hidden">Copycall</span>
     </span>
   );
 }
