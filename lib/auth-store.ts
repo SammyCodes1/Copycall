@@ -13,6 +13,10 @@ export interface AuthStore {
   consumeNonce(nonce: string, wallet: string): Promise<Date | null>;
   /** Count one hit in a fixed window. Returns true if still within `limit`. */
   hitRateLimit(bucket: string, limit: number, windowSec: number): Promise<boolean>;
-  /** Find or create the users row for a wallet; returns users.id. */
-  upsertUser(wallet: string): Promise<string>;
+  /** Find or create the users row for a wallet; returns users.id and its current session_version. */
+  upsertUser(wallet: string): Promise<{ id: string; sessionVersion: number }>;
+  /** Current users.session_version, or null if the user does not exist. */
+  getSessionVersion(userId: string): Promise<number | null>;
+  /** Increment users.session_version (revokes every outstanding session token for the user). */
+  bumpSessionVersion(userId: string): Promise<void>;
 }

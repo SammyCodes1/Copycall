@@ -73,6 +73,29 @@ describe("supabase migrations", () => {
     await expect(asRole("anon", () => db.query(`select public.rate_limit_hit('b', 10, 60)`))).rejects.toThrow(/permission denied/);
   });
 
+  it("users.session_version defaults to 1 and bump_session_version increments it (service_role only)", async () => {
+    const u = await asRole("service_role", () =>
+      db.query<{ id: string; session_version: number }>(`insert into public.users (wallet) values ('svWallet') returning id, session_version`),
+    );
+    expect(u.rows[0].session_version).toBe(1);
+    const id = u.rows[0].id;
+    await expect(asRole("anon", () => db.query(`select public.bump_session_version($1)`, [id]))).rejects.toThrow(/permission denied/);
+    await expect(asRole("authenticated", () => db.query(`select public.bump_session_version($1)`, [id]))).rejects.toThrow(/permission denied/);
+    const bumped = await asRole("service_role", () => db.query<{ v: number }>(`select public.bump_session_version($1) as v`, [id]));
+    expect(bumped.rows[0].v).toBe(2);
+    const missing = await asRole("service_role", () =>
+      db.query<{ v: number | null }>(`select public.bump_session_version('00000000-0000-0000-0000-000000000000') as v`),
+    );
+    expect(missing.rows[0].v).toBeNull();
+    // upsert on conflict (what the app does at sign-in) keeps the bumped version
+    const again = await asRole("service_role", () =>
+      db.query<{ session_version: number }>(
+        `insert into public.users (wallet) values ('svWallet') on conflict (wallet) do update set wallet = excluded.wallet returning session_version`,
+      ),
+    );
+    expect(again.rows[0].session_version).toBe(2);
+  });
+
   it("consume_auth_nonce is single-use and bound to the wallet", async () => {
     await asRole("service_role", async () => {
       await db.query(`insert into public.auth_nonces values ('nonce1', 'walletA', now() + interval '5 minutes')`);

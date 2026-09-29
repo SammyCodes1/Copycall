@@ -5,12 +5,12 @@ import "server-only";
  */
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { AuthError, type AuthDeps } from "./auth-core";
+import { AuthError, resolveSession, type AuthDeps } from "./auth-core";
 import type { AuthStore } from "./auth-store";
 import { supabaseAuthStore } from "./auth-store-supabase";
 import { getAppOrigin, getSessionSecret, isMockMode } from "./env";
 import { getSharedMemoryAuthStore } from "./mock/auth-store-memory";
-import { SESSION_COOKIE, SESSION_TTL_SEC, verifySession, type SessionPayload } from "./session";
+import { SESSION_COOKIE, SESSION_TTL_SEC, type SessionPayload } from "./session";
 
 /** Mock mode uses the in-memory store (never in production); otherwise Supabase. */
 export function getAuthStore(): AuthStore {
@@ -26,12 +26,16 @@ export function sessionCookieOptions(maxAge = SESSION_TTL_SEC) {
   return { httpOnly: true, secure: true, sameSite: "lax" as const, path: "/", maxAge };
 }
 
-/** Current session from the request cookie, or null. For server components and routes. */
+/**
+ * Current session from the request cookie, or null. For server components and
+ * routes. Checks the signature, expiry and the server-side session_version
+ * (so logged-out tokens are rejected).
+ */
 export async function getSession(): Promise<SessionPayload | null> {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!token) return null;
   try {
-    return verifySession(token, getSessionSecret());
+    return await resolveSession({ store: getAuthStore(), sessionSecret: getSessionSecret() }, token);
   } catch {
     return null; // e.g. SESSION_SECRET not configured yet
   }

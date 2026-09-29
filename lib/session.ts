@@ -9,9 +9,10 @@ export const SESSION_COOKIE = "__Host-cc_session";
 export const SESSION_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (addendum E)
 
 export type SessionPayload = {
-  v: 1;
+  v: 2;
   uid: string; // users.id
   w: string; // wallet
+  sv: number; // users.session_version at sign-in; bumping it revokes the token
   iat: number; // unix seconds
   exp: number; // unix seconds
 };
@@ -20,14 +21,23 @@ function mac(data: string, secret: string): string {
   return createHmac("sha256", secret).update(data).digest("base64url");
 }
 
-export function signSession(p: { uid: string; wallet: string }, secret: string, nowMs = Date.now()): string {
+export function signSession(
+  p: { uid: string; wallet: string; sessionVersion: number },
+  secret: string,
+  nowMs = Date.now(),
+): string {
   const iat = Math.floor(nowMs / 1000);
-  const payload: SessionPayload = { v: 1, uid: p.uid, w: p.wallet, iat, exp: iat + SESSION_TTL_SEC };
+  const payload: SessionPayload = { v: 2, uid: p.uid, w: p.wallet, sv: p.sessionVersion, iat, exp: iat + SESSION_TTL_SEC };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `${body}.${mac(body, secret)}`;
 }
 
-/** Returns the payload if the signature is valid and not expired, else null. */
+/**
+ * Returns the payload if the signature is valid and not expired, else null.
+ * This only checks the token itself; callers must also compare `sv` with the
+ * user's current session_version (see resolveSession in lib/auth-core.ts) so
+ * that logged-out tokens stop working. Old v1 tokens (no `sv`) are rejected.
+ */
 export function verifySession(token: string | undefined, secret: string, nowMs = Date.now()): SessionPayload | null {
   if (!token || token.length > 2048) return null;
   const [body, sig, extra] = token.split(".");
@@ -37,7 +47,8 @@ export function verifySession(token: string | undefined, secret: string, nowMs =
   if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
   try {
     const p = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as SessionPayload;
-    if (p.v !== 1 || typeof p.uid !== "string" || typeof p.w !== "string") return null;
+    if (p.v !== 2 || typeof p.uid !== "string" || typeof p.w !== "string") return null;
+    if (!Number.isInteger(p.sv) || p.sv < 1) return null;
     if (typeof p.exp !== "number" || p.exp * 1000 <= nowMs) return null;
     return p;
   } catch {

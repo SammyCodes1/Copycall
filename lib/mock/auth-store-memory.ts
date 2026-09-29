@@ -12,13 +12,14 @@ type State = {
   nonces: Map<string, { wallet: string; expiresAt: Date }>;
   limits: Map<string, number>;
   users: Map<string, string>; // wallet -> id
+  versions: Map<string, number>; // id -> session_version
 };
 
 export function createMemoryAuthStore(state?: State): AuthStore {
   assertBootSafe(process.env);
   if (isVercelProduction(process.env)) throw new Error("Memory auth store is not allowed in production");
 
-  const s: State = state ?? { nonces: new Map(), limits: new Map(), users: new Map() };
+  const s: State = state ?? { nonces: new Map(), limits: new Map(), users: new Map(), versions: new Map() };
   return {
     async createNonce(nonce, wallet, expiresAt) {
       s.nonces.set(nonce, { wallet, expiresAt });
@@ -41,8 +42,16 @@ export function createMemoryAuthStore(state?: State): AuthStore {
       if (!id) {
         id = randomUUID();
         s.users.set(wallet, id);
+        s.versions.set(id, 1);
       }
-      return id;
+      return { id, sessionVersion: s.versions.get(id) ?? 1 };
+    },
+    async getSessionVersion(userId) {
+      return s.versions.get(userId) ?? null;
+    },
+    async bumpSessionVersion(userId) {
+      const v = s.versions.get(userId);
+      if (v !== undefined) s.versions.set(userId, v + 1);
     },
   };
 }

@@ -32,9 +32,21 @@ export const supabaseAuthStore: AuthStore = {
     const { data, error } = await getDb()
       .from("users")
       .upsert({ wallet }, { onConflict: "wallet" })
-      .select("id")
+      .select("id, session_version")
       .single();
     if (error || !data) throw new Error("Failed to upsert user");
-    return data.id as string;
+    return { id: data.id as string, sessionVersion: Number(data.session_version) };
+  },
+
+  async getSessionVersion(userId) {
+    const { data, error } = await getDb().from("users").select("session_version").eq("id", userId).maybeSingle();
+    if (error) throw new Error("Failed to read session version");
+    return data ? Number(data.session_version) : null;
+  },
+
+  async bumpSessionVersion(userId) {
+    // Atomic increment in Postgres (see migration 20260929000003).
+    const { error } = await getDb().rpc("bump_session_version", { p_user_id: userId });
+    if (error) throw new Error("Failed to revoke sessions");
   },
 };

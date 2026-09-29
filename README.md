@@ -92,14 +92,29 @@ values, which the app does not currently read (the browser never queries Supabas
   RPC functions are executable by `service_role` only.
 - **Login**: SIWS-style message (domain, wallet, nonce, issued-at, expiry), nonce bound to
   the wallet, 5-minute expiry, consumed atomically with `DELETE ... RETURNING` before the
-  signature check, ed25519 verify against the wallet key (tweetnacl). Session cookie
-  `__Host-cc_session`: HttpOnly, Secure, SameSite=Lax, 7 days, HMAC-signed.
-- **CSRF**: every POST requires `Origin` to equal `APP_URL`.
-- **Rate limit**: `/api/auth/nonce` 10/min per (hashed) IP in a Postgres table.
-- **Headers**: CSP (`frame-ancestors 'none'`, `connect-src 'self'`), nosniff,
-  strict-origin-when-cross-origin, HSTS, X-Frame-Options, Permissions-Policy.
+  signature check, ed25519 verify against the wallet key (tweetnacl).
+- **Keyless wallets refused** (`isAllowedSignInWallet` in `lib/siws.ts`): at nonce issue, at
+  verify and inside the signature check we reject off-curve keys (PDAs), small-order ed25519
+  points (which allow forged signatures), and a denylist of program, sysvar and native-mint ids
+  (System, Token, Token-2022, ATA, Compute Budget, Memo, Vote, Stake, loaders, sysvars, wSOL).
+- **Sessions**: cookie `__Host-cc_session` (HttpOnly, Secure, SameSite=Lax, 7 days,
+  HMAC-signed) carries `users.session_version` (`sv`). Every `getSession()` re-checks it
+  in the database; logout bumps it (`bump_session_version`, service role only), so a
+  logged-out or stolen token stops working at once. If the store is unreachable there is no session.
+- **CSRF**: every POST (nonce, verify, logout) requires `Origin` to equal `APP_URL`.
+- **Rate limits** (shared Postgres table): `/api/auth/nonce` 10/min per hashed IP;
+  `/api/auth/verify` 10/min per hashed IP and 10/min per wallet.
+- **CSP** (`proxy.ts` + `lib/csp.ts`): a fresh nonce per request,
+  `script-src 'self' 'nonce-…' 'strict-dynamic'` (no `'unsafe-inline'`; `'unsafe-eval'` in
+  dev only), `connect-src 'self'`, `frame-ancestors 'none'`, `object-src 'none'`,
+  `frame-src https://connect.solflare.com`, fonts and images self-hosted only. `style-src` still
+  allows `'unsafe-inline'` (inline `style` attributes can't carry nonces). API routes get
+  `default-src 'none'`. Pages render per request, which nonces require.
+- **Other headers** (`next.config.ts`): nosniff, strict-origin-when-cross-origin, HSTS,
+  X-Frame-Options DENY, Permissions-Policy, no `X-Powered-By`.
 - **Secrets hygiene**: `.env*` ignored except `.env.example`; gitleaks pre-commit hook
-  (`.githooks/pre-commit`, enabled by `npm install`) and GitHub Action.
+  (`.githooks/pre-commit`, enabled by `npm install`) and a GitHub Action with every action
+  pinned to a full commit SHA (`actions/checkout` v6.1.0, `gitleaks/gitleaks-action` v3.0.0).
 
 ## Design tokens
 
