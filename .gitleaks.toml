@@ -1,0 +1,40 @@
+# gitleaks configuration for Copycall.
+# Uses the full default ruleset plus project-specific rules for Panta keys and
+# our named secrets. Run locally: gitleaks git --config .gitleaks.toml -v
+title = "copycall gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "panta-api-key"
+description = "Panta API key (pk_test_ / pk_live_)"
+regex = '''\bpk_(?:test|live)_[A-Za-z0-9_\-]{8,}'''
+keywords = ["pk_test_", "pk_live_"]
+
+[[rules]]
+id = "copycall-named-secret-env-assignment"
+description = "A Copycall secret env var given a value in env-file style (NAME=value)"
+regex = '''(?im)^\s*(?:export\s+)?(PANTA_API_KEY|SUPABASE_SERVICE_ROLE_KEY|TELEGRAM_BOT_TOKEN|TELEGRAM_WEBHOOK_SECRET|CRON_SECRET|SESSION_SECRET)\s*=\s*["']?([^\s"'#]{12,})'''
+secretGroup = 2
+keywords = ["panta_api_key", "supabase_service_role_key", "telegram_bot_token", "telegram_webhook_secret", "cron_secret", "session_secret"]
+
+[[rules]]
+id = "copycall-named-secret-literal"
+description = "A Copycall secret name assigned a quoted string literal in code"
+regex = '''(?i)\b(PANTA_API_KEY|SUPABASE_SERVICE_ROLE_KEY|TELEGRAM_BOT_TOKEN|TELEGRAM_WEBHOOK_SECRET|CRON_SECRET|SESSION_SECRET)["']?\s*[:=]\s*["'`]([^"'`\s]{12,})["'`]'''
+secretGroup = 2
+keywords = ["panta_api_key", "supabase_service_role_key", "telegram_bot_token", "telegram_webhook_secret", "cron_secret", "session_secret"]
+
+[[rules]]
+id = "helius-rpc-url-with-key"
+description = "Helius RPC URL containing an api-key"
+regex = '''https://[a-z0-9\-\.]*helius[a-z0-9\-\.]*/\?api-key=[A-Za-z0-9\-]{16,}'''
+keywords = ["helius"]
+
+[allowlist]
+description = "Template and generated files"
+paths = [
+  '''(^|/)\.env\.example$''',
+  '''(^|/)package-lock\.json$''',
+]

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Copycall pre-commit hook: block commits that contain secrets.
+# Enabled automatically by `npm install` (the "prepare" script sets core.hooksPath).
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed. Install it (https://github.com/gitleaks/gitleaks#installing) and retry." >&2
+  exit 1
+fi
+exec gitleaks git --pre-commit --staged --config .gitleaks.toml --redact --verbose

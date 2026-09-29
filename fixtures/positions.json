@@ -1,0 +1,2428 @@
+{
+  "2UqHDhTNCV9HD3ZAeHjRtSBkyWsB2x3Uzzc8WmWbUELj": [
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "no",
+      "shares": "49.95",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "140.28",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8QFVVozRgRP53VWDf2zqfkghLFwZ1cGCDbZYYraAU5BQ",
+      "category": "culture",
+      "side": "no",
+      "shares": "87.67",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "yes",
+      "shares": "160.44",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "no",
+      "shares": "72.98",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "107.56",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "WxLLRanY64W8XkCBDsNrMc6PMEBqup5dyeDbYisXczU",
+      "category": "crypto",
+      "side": "no",
+      "shares": "70.31",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "no",
+      "shares": "76.60",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "no"
+    },
+    {
+      "marketId": "yV1ZWeejHzzRuFwg3k9XRsb8VTj7KnTup15bfUU4U11",
+      "category": "culture",
+      "side": "yes",
+      "shares": "203.89",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "no",
+      "shares": "73.99",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8rhhgusczEEVEvbrUpChjNagj1Kh4tf14nJetSC5h9rT",
+      "category": "tech",
+      "side": "no",
+      "shares": "226.83",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "81.35",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "yes",
+      "shares": "72.91",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "Db91vmWZBHtCh6cYx4nbtFU97DRMvnNvzEEgu4wXzC2S",
+      "category": "sports",
+      "side": "yes",
+      "shares": "77.99",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "no",
+      "shares": "77.45",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "2yttKDCBNJZo1W2GQULRsD5htx3GdAwX6caC2g2pB5it",
+      "category": "tech",
+      "side": "yes",
+      "shares": "25.75",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "yes",
+      "shares": "27.41",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "no",
+      "shares": "11.52",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "no",
+      "shares": "178.46",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    }
+  ],
+  "H5bgb2WUsPZ4Sc4oDaCBo2MnUHK1cmWmDXSp7GqBRNtV": [
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "no",
+      "shares": "37.55",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "22.17",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "yes",
+      "shares": "110.52",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8rhhgusczEEVEvbrUpChjNagj1Kh4tf14nJetSC5h9rT",
+      "category": "tech",
+      "side": "no",
+      "shares": "34.00",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "yes",
+      "shares": "9.97",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "17.75",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "yes",
+      "shares": "16.73",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "no",
+      "shares": "46.29",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "yes",
+      "shares": "54.26",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "47Z2bNxRmMvncqeHpWZibkiVLfUNkB2U5GKByEu1ACsH",
+      "category": "crypto",
+      "side": "no",
+      "shares": "64.34",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "83.29",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "no",
+      "shares": "49.09",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "no",
+      "shares": "43.57",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "no"
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "no",
+      "shares": "174.05",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "WxLLRanY64W8XkCBDsNrMc6PMEBqup5dyeDbYisXczU",
+      "category": "crypto",
+      "side": "no",
+      "shares": "152.21",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    }
+  ],
+  "A366BUQaRb4hKVj67oDUQBwKYc5pjx55NQnHu8xafLwS": [
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "yes",
+      "shares": "236.91",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "yes",
+      "shares": "151.29",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "no",
+      "shares": "131.07",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "yV1ZWeejHzzRuFwg3k9XRsb8VTj7KnTup15bfUU4U11",
+      "category": "culture",
+      "side": "yes",
+      "shares": "30.55",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "no",
+      "shares": "36.69",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "68.04",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "no",
+      "shares": "64.55",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "135.49",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "no",
+      "shares": "120.70",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "no",
+      "shares": "48.62",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "36.50",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "76.06",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "6NozQjaz3PcCDR2o1YRNcrdPn6iAc4K4jyP3RvKB7veq",
+      "category": "sports",
+      "side": "no",
+      "shares": "112.73",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Db91vmWZBHtCh6cYx4nbtFU97DRMvnNvzEEgu4wXzC2S",
+      "category": "sports",
+      "side": "yes",
+      "shares": "145.61",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "57.21",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    }
+  ],
+  "Fwu5Fg7nz6upH21FBv2Z1DEvYrX6UtKqqyf5N2UH9ouV": [
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "56.07",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "72.47",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "no",
+      "shares": "55.12",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "6NozQjaz3PcCDR2o1YRNcrdPn6iAc4K4jyP3RvKB7veq",
+      "category": "sports",
+      "side": "yes",
+      "shares": "29.49",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "95.92",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "2yttKDCBNJZo1W2GQULRsD5htx3GdAwX6caC2g2pB5it",
+      "category": "tech",
+      "side": "yes",
+      "shares": "72.46",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "yes",
+      "shares": "14.33",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "no",
+      "shares": "132.07",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "6.74",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "yes",
+      "shares": "154.20",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "no",
+      "shares": "71.64",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "8rhhgusczEEVEvbrUpChjNagj1Kh4tf14nJetSC5h9rT",
+      "category": "tech",
+      "side": "yes",
+      "shares": "134.19",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DasfHTrpLp88BArA6fJxDHFWVPYMkJFSZ6qjcuxrn1Rk",
+      "category": "tech",
+      "side": "no",
+      "shares": "160.93",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "no",
+      "shares": "131.49",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "47Z2bNxRmMvncqeHpWZibkiVLfUNkB2U5GKByEu1ACsH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "70.02",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "8QFVVozRgRP53VWDf2zqfkghLFwZ1cGCDbZYYraAU5BQ",
+      "category": "culture",
+      "side": "no",
+      "shares": "239.32",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "no",
+      "shares": "159.03",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "no"
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "yes",
+      "shares": "46.30",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "yes",
+      "shares": "94.70",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "no",
+      "shares": "59.23",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    }
+  ],
+  "EGy7TryvsLum6zD5BzWvVi7wYwdTpkn658bmMKCFSu1d": [
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "yes",
+      "shares": "117.54",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "no",
+      "shares": "53.45",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "8rhhgusczEEVEvbrUpChjNagj1Kh4tf14nJetSC5h9rT",
+      "category": "tech",
+      "side": "no",
+      "shares": "139.26",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "107.54",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "no",
+      "shares": "133.39",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "WxLLRanY64W8XkCBDsNrMc6PMEBqup5dyeDbYisXczU",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "78.49",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "2yttKDCBNJZo1W2GQULRsD5htx3GdAwX6caC2g2pB5it",
+      "category": "tech",
+      "side": "no",
+      "shares": "7.18",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "no",
+      "shares": "125.22",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "yes",
+      "shares": "30.70",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "no",
+      "shares": "141.53",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "no",
+      "shares": "143.71",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Db91vmWZBHtCh6cYx4nbtFU97DRMvnNvzEEgu4wXzC2S",
+      "category": "sports",
+      "side": "yes",
+      "shares": "137.54",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "yes",
+      "shares": "81.47",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "47Z2bNxRmMvncqeHpWZibkiVLfUNkB2U5GKByEu1ACsH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "154.78",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "no",
+      "shares": "62.79",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "no"
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "yes",
+      "shares": "33.89",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "no",
+      "shares": "24.60",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    }
+  ],
+  "6xCjNRFsJRojokUggJCCojay8RjUoK38413Lwi6r9MC7": [
+    {
+      "marketId": "8rhhgusczEEVEvbrUpChjNagj1Kh4tf14nJetSC5h9rT",
+      "category": "tech",
+      "side": "yes",
+      "shares": "82.30",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DasfHTrpLp88BArA6fJxDHFWVPYMkJFSZ6qjcuxrn1Rk",
+      "category": "tech",
+      "side": "yes",
+      "shares": "65.47",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "no",
+      "shares": "15.66",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "WxLLRanY64W8XkCBDsNrMc6PMEBqup5dyeDbYisXczU",
+      "category": "crypto",
+      "side": "no",
+      "shares": "66.14",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "yes",
+      "shares": "30.17",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "no",
+      "shares": "89.01",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "yes",
+      "shares": "106.97",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "64.86",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "yes",
+      "shares": "123.44",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "87.04",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "no",
+      "shares": "163.88",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "yes",
+      "shares": "13.40",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Db91vmWZBHtCh6cYx4nbtFU97DRMvnNvzEEgu4wXzC2S",
+      "category": "sports",
+      "side": "yes",
+      "shares": "88.82",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "no",
+      "shares": "13.45",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "51.74",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "no",
+      "shares": "60.27",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "47.67",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    }
+  ],
+  "G4WTP2KpqHYoqsDg14seDzc1aKUY1ngdFxCL71K6574d": [
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "yes",
+      "shares": "113.11",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "yV1ZWeejHzzRuFwg3k9XRsb8VTj7KnTup15bfUU4U11",
+      "category": "culture",
+      "side": "no",
+      "shares": "14.39",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "33.59",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "no",
+      "shares": "35.54",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "143.83",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "no",
+      "shares": "26.09",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "yes",
+      "shares": "200.41",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "47Z2bNxRmMvncqeHpWZibkiVLfUNkB2U5GKByEu1ACsH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "85.29",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "8QFVVozRgRP53VWDf2zqfkghLFwZ1cGCDbZYYraAU5BQ",
+      "category": "culture",
+      "side": "no",
+      "shares": "53.03",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "yes",
+      "shares": "32.47",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "no",
+      "shares": "91.83",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "yes",
+      "shares": "123.55",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DasfHTrpLp88BArA6fJxDHFWVPYMkJFSZ6qjcuxrn1Rk",
+      "category": "tech",
+      "side": "no",
+      "shares": "66.18",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "6NozQjaz3PcCDR2o1YRNcrdPn6iAc4K4jyP3RvKB7veq",
+      "category": "sports",
+      "side": "yes",
+      "shares": "152.48",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "no",
+      "shares": "154.26",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "yes",
+      "shares": "94.15",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "88.94",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "no",
+      "shares": "14.20",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "47.30",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    }
+  ],
+  "45t2JHUkWFVuErAadTCbwz2AnjzvzzYYeSAozNxqyfGN": [
+    {
+      "marketId": "8rhhgusczEEVEvbrUpChjNagj1Kh4tf14nJetSC5h9rT",
+      "category": "tech",
+      "side": "yes",
+      "shares": "56.40",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "134.81",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "no",
+      "shares": "71.59",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "149.33",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8QFVVozRgRP53VWDf2zqfkghLFwZ1cGCDbZYYraAU5BQ",
+      "category": "culture",
+      "side": "no",
+      "shares": "167.64",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "no",
+      "shares": "14.96",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "no"
+    },
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "yes",
+      "shares": "57.08",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "no",
+      "shares": "24.36",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "yes",
+      "shares": "70.68",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Db91vmWZBHtCh6cYx4nbtFU97DRMvnNvzEEgu4wXzC2S",
+      "category": "sports",
+      "side": "yes",
+      "shares": "77.43",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "no",
+      "shares": "22.65",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DasfHTrpLp88BArA6fJxDHFWVPYMkJFSZ6qjcuxrn1Rk",
+      "category": "tech",
+      "side": "yes",
+      "shares": "72.77",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "WxLLRanY64W8XkCBDsNrMc6PMEBqup5dyeDbYisXczU",
+      "category": "crypto",
+      "side": "no",
+      "shares": "34.79",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "yV1ZWeejHzzRuFwg3k9XRsb8VTj7KnTup15bfUU4U11",
+      "category": "culture",
+      "side": "no",
+      "shares": "72.18",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "2yttKDCBNJZo1W2GQULRsD5htx3GdAwX6caC2g2pB5it",
+      "category": "tech",
+      "side": "no",
+      "shares": "17.30",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "no",
+      "shares": "105.94",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "no"
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "yes",
+      "shares": "215.00",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "yes",
+      "shares": "13.43",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "no",
+      "shares": "53.65",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    }
+  ],
+  "AYqbtJ1QhaLfNDZA1snYodrZcSTdmwrzvaqkXnmkvjKe": [
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "yes",
+      "shares": "136.48",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "70.38",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "yes",
+      "shares": "71.20",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "no",
+      "shares": "182.16",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8QFVVozRgRP53VWDf2zqfkghLFwZ1cGCDbZYYraAU5BQ",
+      "category": "culture",
+      "side": "no",
+      "shares": "9.78",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "72.56",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "no",
+      "shares": "69.23",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "WxLLRanY64W8XkCBDsNrMc6PMEBqup5dyeDbYisXczU",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "66.60",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "yes",
+      "shares": "38.77",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DasfHTrpLp88BArA6fJxDHFWVPYMkJFSZ6qjcuxrn1Rk",
+      "category": "tech",
+      "side": "no",
+      "shares": "130.04",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "no",
+      "shares": "25.50",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "no",
+      "shares": "117.86",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "17.13",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "13.58",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "6NozQjaz3PcCDR2o1YRNcrdPn6iAc4K4jyP3RvKB7veq",
+      "category": "sports",
+      "side": "no",
+      "shares": "9.16",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "37.01",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "47Z2bNxRmMvncqeHpWZibkiVLfUNkB2U5GKByEu1ACsH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "306.80",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "yes",
+      "shares": "30.46",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "yV1ZWeejHzzRuFwg3k9XRsb8VTj7KnTup15bfUU4U11",
+      "category": "culture",
+      "side": "yes",
+      "shares": "238.66",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    }
+  ],
+  "CZZn2W8tfsCzgVecYZWMSxpWBA9QrVJaDcE79KWoYyM3": [
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "yes",
+      "shares": "134.54",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8rhhgusczEEVEvbrUpChjNagj1Kh4tf14nJetSC5h9rT",
+      "category": "tech",
+      "side": "yes",
+      "shares": "214.83",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "no",
+      "shares": "64.10",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "yes",
+      "shares": "81.72",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "no",
+      "shares": "137.60",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "no",
+      "shares": "8.04",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "yes",
+      "shares": "36.59",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "yes",
+      "shares": "129.95",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "no",
+      "shares": "232.62",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "38.63",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "no",
+      "shares": "102.78",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "56.48",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "Db91vmWZBHtCh6cYx4nbtFU97DRMvnNvzEEgu4wXzC2S",
+      "category": "sports",
+      "side": "yes",
+      "shares": "34.29",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "yes",
+      "shares": "45.84",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    }
+  ],
+  "3uKU1xYHWvCb36JXycG2WnDGYszoJUbNZ4eFHzAkUniW": [
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "no",
+      "shares": "97.89",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "yes",
+      "shares": "37.02",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "103.44",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "yes",
+      "shares": "80.14",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "no",
+      "shares": "206.74",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "no",
+      "shares": "70.74",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "Db91vmWZBHtCh6cYx4nbtFU97DRMvnNvzEEgu4wXzC2S",
+      "category": "sports",
+      "side": "yes",
+      "shares": "47.41",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "8QFVVozRgRP53VWDf2zqfkghLFwZ1cGCDbZYYraAU5BQ",
+      "category": "culture",
+      "side": "yes",
+      "shares": "99.47",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "no",
+      "shares": "121.09",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "yes",
+      "shares": "46.55",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "no",
+      "shares": "84.69",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "yes",
+      "shares": "3.27",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "yV1ZWeejHzzRuFwg3k9XRsb8VTj7KnTup15bfUU4U11",
+      "category": "culture",
+      "side": "no",
+      "shares": "28.09",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "no",
+      "shares": "177.79",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "6NozQjaz3PcCDR2o1YRNcrdPn6iAc4K4jyP3RvKB7veq",
+      "category": "sports",
+      "side": "no",
+      "shares": "30.41",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "yes",
+      "shares": "34.86",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "47Z2bNxRmMvncqeHpWZibkiVLfUNkB2U5GKByEu1ACsH",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "31.66",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    }
+  ],
+  "9AFedDPrtdMJkeK3sZYYidEbS27v3vXo21NrAe8AjnQQ": [
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "no",
+      "shares": "117.64",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "yV1ZWeejHzzRuFwg3k9XRsb8VTj7KnTup15bfUU4U11",
+      "category": "culture",
+      "side": "no",
+      "shares": "139.48",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "yes",
+      "shares": "124.89",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DasfHTrpLp88BArA6fJxDHFWVPYMkJFSZ6qjcuxrn1Rk",
+      "category": "tech",
+      "side": "no",
+      "shares": "69.11",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "no",
+      "shares": "248.14",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "GPP54ZfgCfjSuUjYxgDvpGabMkugLUsab36RT3zGRvZs",
+      "category": "tech",
+      "side": "no",
+      "shares": "22.43",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8edy1JhHVnhy1fmraMdL9z19dyWxZLtZCaGewk5H2vZ8",
+      "category": "culture",
+      "side": "yes",
+      "shares": "96.75",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8QFVVozRgRP53VWDf2zqfkghLFwZ1cGCDbZYYraAU5BQ",
+      "category": "culture",
+      "side": "no",
+      "shares": "54.88",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "yes",
+      "shares": "17.80",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "CVexbXTxhHUYMQ9oxaJ43cHiyEosEUtBxXKdP8msTmp3",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "85.53",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "47Z2bNxRmMvncqeHpWZibkiVLfUNkB2U5GKByEu1ACsH",
+      "category": "crypto",
+      "side": "no",
+      "shares": "75.85",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "yes",
+      "shares": "57.17",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "WxLLRanY64W8XkCBDsNrMc6PMEBqup5dyeDbYisXczU",
+      "category": "crypto",
+      "side": "no",
+      "shares": "101.27",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "18.89",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "Db91vmWZBHtCh6cYx4nbtFU97DRMvnNvzEEgu4wXzC2S",
+      "category": "sports",
+      "side": "yes",
+      "shares": "62.87",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "no",
+      "shares": "11.72",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "49.49",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "DMtBjNvcxWybfZFidoE7WT2vC8CtLdoJdYU12c9j5TAT",
+      "category": "politics",
+      "side": "no",
+      "shares": "123.30",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "no",
+      "shares": "21.66",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    }
+  ],
+  "8t932ZqjNu2Xs1f35cFujifbWseYGb5fdfEgtJ3hyvk": [
+    {
+      "marketId": "4hHAoVSKTnG131fxSnBT8fPBkaWDUUVRPud8FQeNAiLC",
+      "category": "politics",
+      "side": "yes",
+      "shares": "109.94",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "yes",
+      "shares": "149.40",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "2yttKDCBNJZo1W2GQULRsD5htx3GdAwX6caC2g2pB5it",
+      "category": "tech",
+      "side": "no",
+      "shares": "86.15",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "no",
+      "shares": "38.76",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "WxLLRanY64W8XkCBDsNrMc6PMEBqup5dyeDbYisXczU",
+      "category": "crypto",
+      "side": "no",
+      "shares": "43.64",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    }
+  ],
+  "9yXS3JxoTskE8wzvqNw1kZzWLzoyCXiTrL7wDsF5zZv5": [
+    {
+      "marketId": "6NozQjaz3PcCDR2o1YRNcrdPn6iAc4K4jyP3RvKB7veq",
+      "category": "sports",
+      "side": "no",
+      "shares": "143.08",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "no",
+      "shares": "152.04",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "yes",
+      "shares": "192.13",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "C8xhyuw7BGRugt5vJWxUKpgj7euuKrrJbZU2DAiCmDmH",
+      "category": "crypto",
+      "side": "no",
+      "shares": "72.63",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    }
+  ],
+  "D7QHETV54y6VsV7KrhM41efgG4G47rwwcMWqzZUhPmhv": [
+    {
+      "marketId": "GdwHjnBtvm8HhTae9aGJWsJoXADUQzPvfcythZNMuWTh",
+      "category": "crypto",
+      "side": "no",
+      "shares": "183.89",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8ogCtV9ySgbQpuUZLuRmBhRU9QJtNLYstw6Umk3oLoku",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "24.57",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    },
+    {
+      "marketId": "Cg5VGD3CWKzrwdoq9P8ucGfYnsqPQngTzeUrGEKBZ79Z",
+      "category": "sports",
+      "side": "no",
+      "shares": "93.05",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "2yttKDCBNJZo1W2GQULRsD5htx3GdAwX6caC2g2pB5it",
+      "category": "tech",
+      "side": "yes",
+      "shares": "53.99",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "no",
+      "shares": "144.73",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "8QFVVozRgRP53VWDf2zqfkghLFwZ1cGCDbZYYraAU5BQ",
+      "category": "culture",
+      "side": "yes",
+      "shares": "88.62",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "no",
+      "shares": "71.65",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "yes"
+    }
+  ],
+  "3BUGBeSBC8RZAuzVorWE2rzAtNm1pV5xGq8Dn4HKQA76": [
+    {
+      "marketId": "47Z2bNxRmMvncqeHpWZibkiVLfUNkB2U5GKByEu1ACsH",
+      "category": "crypto",
+      "side": "no",
+      "shares": "75.39",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": true,
+      "outcome": "no"
+    },
+    {
+      "marketId": "2yttKDCBNJZo1W2GQULRsD5htx3GdAwX6caC2g2pB5it",
+      "category": "tech",
+      "side": "no",
+      "shares": "27.48",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "AhjFcERJzx9BqunuuSgX5bP7VnsD45PPpEs4uqM493Dw",
+      "category": "sports",
+      "side": "no",
+      "shares": "69.35",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "no"
+    }
+  ],
+  "2i47P2NT9HFc1tSEdmLNHaXyHw6ZXt6qoU2fYy3mt6r4": [
+    {
+      "marketId": "7GUXNmUDxvQ9nTu5nxnmRryfRMC9t49CqxVVAoaBR8Gx",
+      "category": "tech",
+      "side": "yes",
+      "shares": "65.22",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "FZjbjNGo5bCtXXfxpMMZmrkjaDJzMsH1oyf7X3FAmPFs",
+      "category": "sports",
+      "side": "yes",
+      "shares": "20.78",
+      "phase": "resolved",
+      "claimable": false,
+      "claimed": false,
+      "outcome": "no"
+    },
+    {
+      "marketId": "E6EQnv1p3NcXAm4uz1wNsuaPAd2f8B3CFRc89miGKxFy",
+      "category": "sports",
+      "side": "yes",
+      "shares": "93.58",
+      "phase": "resolved",
+      "claimable": true,
+      "claimed": false,
+      "outcome": "yes"
+    }
+  ],
+  "EbHd7kE4b3cuGFfmwm38RNQ97xJqjyQm24cJBEMeks6T": [
+    {
+      "marketId": "WxLLRanY64W8XkCBDsNrMc6PMEBqup5dyeDbYisXczU",
+      "category": "crypto",
+      "side": "no",
+      "shares": "61.95",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "2yttKDCBNJZo1W2GQULRsD5htx3GdAwX6caC2g2pB5it",
+      "category": "tech",
+      "side": "yes",
+      "shares": "64.33",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "H32hg8EGpxg62b7FQ6m76Gb5rfuoqxDfJgBLJcD3rQ2r",
+      "category": "politics",
+      "side": "no",
+      "shares": "153.41",
+      "phase": "cancelled",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "8rhhgusczEEVEvbrUpChjNagj1Kh4tf14nJetSC5h9rT",
+      "category": "tech",
+      "side": "no",
+      "shares": "156.33",
+      "phase": "secondary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "6NozQjaz3PcCDR2o1YRNcrdPn6iAc4K4jyP3RvKB7veq",
+      "category": "sports",
+      "side": "no",
+      "shares": "15.89",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "yV1ZWeejHzzRuFwg3k9XRsb8VTj7KnTup15bfUU4U11",
+      "category": "culture",
+      "side": "yes",
+      "shares": "173.39",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    },
+    {
+      "marketId": "275FAqLkS7h5f6zEcSVpNSoUTbKbHDgK7wTrVZd7G2XY",
+      "category": "crypto",
+      "side": "yes",
+      "shares": "57.26",
+      "phase": "primary",
+      "claimable": false,
+      "claimed": false,
+      "outcome": null
+    }
+  ]
+}
