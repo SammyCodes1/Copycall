@@ -5,6 +5,10 @@ import { CreatorFlag } from "@/components/CreatorFlag";
 import { StreakTicks } from "@/components/StreakTicks";
 import { ago, shortAddr } from "@/components/format";
 import { HitRate, SideTag, Tag } from "@/components/ui/Badge";
+import { FollowButton } from "@/components/FollowButton";
+import { WalletButton } from "@/components/WalletButton";
+import { getSession } from "@/lib/auth";
+import { getDataStore } from "@/lib/data";
 import { isMockMode } from "@/lib/env";
 import { displayNowSec, getTraderProfile } from "@/lib/queries";
 import { PubkeySchema } from "@/lib/schemas";
@@ -15,7 +19,12 @@ export async function generateMetadata({ params }: PageProps<"/trader/[wallet]">
   return { title: ok ? `Trader ${shortAddr(wallet)} · Copycall` : "Trader · Copycall" };
 }
 
-const PHASE_LABEL = { primary: "Primary", secondary: "Secondary", resolved: "Resolved", cancelled: "Cancelled" } as const;
+const PHASE_LABEL = {
+  primary: "Primary",
+  secondary: "Secondary",
+  resolved: "Resolved",
+  cancelled: "Cancelled",
+} as const;
 
 /** /trader/[wallet]: stats, recent calls and open positions, all from our own store. */
 export default async function TraderPage({ params }: PageProps<"/trader/[wallet]">) {
@@ -26,8 +35,11 @@ export default async function TraderPage({ params }: PageProps<"/trader/[wallet]
 
   const mock = isMockMode();
   const nowSec = displayNowSec();
-  const p = await getTraderProfile(wallet);
+  const [p, session] = await Promise.all([getTraderProfile(wallet), getSession()]);
   const s = p?.stats ?? null;
+  const following =
+    session && p ? (await getDataStore().listFollows(session.uid)).some((f) => f.wallet === wallet) : false;
+  const isSelf = session?.w === wallet;
 
   return (
     <div className="mx-auto max-w-[76rem] px-4 pb-16 sm:px-6">
@@ -37,19 +49,38 @@ export default async function TraderPage({ params }: PageProps<"/trader/[wallet]
         </Link>
       </nav>
 
-      <header className="animate-rise pb-6 pt-5 sm:pt-8">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="label text-fg-subtle">Trader</p>
-          {s && s.rank > 0 && <Tag tone="yes">Rank #{s.rank}</Tag>}
-          {s && s.rank === 0 && <Tag>Not ranked</Tag>}
-          {mock && <Tag>Sample data</Tag>}
+      <header className="animate-rise flex flex-col gap-5 pb-6 pt-5 sm:flex-row sm:items-end sm:justify-between sm:pt-8">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="label text-fg-subtle">Trader</p>
+            {s && s.rank > 0 && <Tag tone="yes">Rank #{s.rank}</Tag>}
+            {s && s.rank === 0 && <Tag>Not ranked</Tag>}
+            {mock && <Tag>Sample data</Tag>}
+          </div>
+          <h1 className="mt-3 font-display text-[2.5rem] leading-[2.75rem] tracking-[-0.015em] sm:text-6xl sm:leading-[4rem]">
+            {shortAddr(wallet)}
+          </h1>
+          <p className="num mt-2 break-all text-xs text-fg-subtle sm:text-sm">{wallet}</p>
+          {s && s.creatorTradeCount > 0 && (
+            <CreatorFlag count={s.creatorTradeCount} verified={s.creatorVerified} className="mt-3" />
+          )}
         </div>
-        <h1 className="mt-3 font-display text-[2.5rem] leading-[2.75rem] tracking-[-0.015em] sm:text-6xl sm:leading-[4rem]">
-          {shortAddr(wallet)}
-        </h1>
-        <p className="num mt-2 break-all text-xs text-fg-subtle sm:text-sm">{wallet}</p>
-        {s && s.creatorTradeCount > 0 && (
-          <CreatorFlag count={s.creatorTradeCount} verified={s.creatorVerified} className="mt-3" />
+        {p && !isSelf && (
+          <div className="sm:pb-1">
+            {session ? (
+              <FollowButton
+                wallet={wallet}
+                initialFollowing={following}
+                size="lg"
+                className="w-full sm:w-auto [&>button]:w-full"
+              />
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <WalletButton sessionWallet={null} size="lg" className="w-full sm:w-auto" />
+                <p className="text-xs text-fg-subtle">Sign in to follow and get alerts.</p>
+              </div>
+            )}
+          </div>
         )}
       </header>
 
@@ -72,7 +103,11 @@ export default async function TraderPage({ params }: PageProps<"/trader/[wallet]
               <div className="col-span-2 flex flex-col gap-1 py-4 pr-4 sm:col-span-1">
                 <dt className="label text-fg-subtle">Hit rate</dt>
                 <dd className="text-4xl leading-10">
-                  {s && s.resolvedCalls > 0 ? <HitRate hitRate={s.hitRate} /> : <span className="num text-fg-subtle">—</span>}
+                  {s && s.resolvedCalls > 0 ? (
+                    <HitRate hitRate={s.hitRate} />
+                  ) : (
+                    <span className="num text-fg-subtle">—</span>
+                  )}
                 </dd>
               </div>
               {[

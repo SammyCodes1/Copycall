@@ -4,7 +4,14 @@
  * across server instances, so it refuses to run on a Vercel production deployment.
  */
 import { randomUUID } from "node:crypto";
-import type { DataStore, StoredMarket, StoredPosition, StoredStats, StoredTrade } from "../data-store";
+import type {
+  DataStore,
+  StoredMarket,
+  StoredPosition,
+  StoredStats,
+  StoredTrade,
+  UserSettings,
+} from "../data-store";
 import { assertBootSafe, isVercelProduction } from "../boot";
 
 type MarketRow = StoredMarket & {
@@ -18,10 +25,22 @@ export type MemoryState = {
   trades: Map<string, StoredTrade>; // by signature
   positions: Map<string, StoredPosition[]>; // by wallet
   stats: Map<string, StoredStats>; // by wallet
+  follows: Map<string, Map<string, number>>; // userId -> leader wallet -> createdAt
+  settings: Map<string, Omit<UserSettings, "telegramLinked"> & { telegramChatId: number | null }>; // by userId
 };
 
+/** users-table defaults (see migration 0001). */
+const DEFAULT_SETTINGS = { maxStakeUsdc: "5.00", slippageBps: 200, alertsEnabled: true, telegramChatId: null };
+
 export function createMemoryState(): MemoryState {
-  return { markets: new Map(), trades: new Map(), positions: new Map(), stats: new Map() };
+  return {
+    markets: new Map(),
+    trades: new Map(),
+    positions: new Map(),
+    stats: new Map(),
+    follows: new Map(),
+    settings: new Map(),
+  };
 }
 
 const byTimeDesc = (a: StoredTrade, b: StoredTrade) => (b.blockTime ?? 0) - (a.blockTime ?? 0);
@@ -29,6 +48,17 @@ const byTimeDesc = (a: StoredTrade, b: StoredTrade) => (b.blockTime ?? 0) - (a.b
 export function createMemoryDataStore(s: MemoryState = createMemoryState()): DataStore {
   assertBootSafe(process.env);
   if (isVercelProduction(process.env)) throw new Error("Memory data store is not allowed in production");
+
+  // The memory auth store owns user ids; settings rows are created on first use with the DB defaults.
+  const userRow = (id: string) => {
+    let row = s.settings.get(id);
+    if (!row) s.settings.set(id, (row = { ...DEFAULT_SETTINGS }));
+    return row;
+  };
+  const view = (id: string): UserSettings => {
+    const { telegramChatId, ...rest } = userRow(id);
+    return { ...rest, telegramLinked: telegramChatId !== null };
+  };
 
   return {
     async upsertMarkets(rows) {
@@ -154,6 +184,31 @@ export function createMemoryDataStore(s: MemoryState = createMemoryState()): Dat
       let max: number | null = null;
       for (const x of s.stats.values()) max = Math.max(max ?? 0, x.updatedAt);
       return max;
+    },
+
+    async follow(userId, wallet) {
+      let m = s.follows.get(userId);
+      if (!m) s.follows.set(userId, (m = new Map()));
+      if (m.has(wallet)) return false;
+      m.set(wallet, Math.floor(Date.now() / 1000));
+      return true;
+    },
+    async unfollow(userId, wallet) {
+      return s.follows.get(userId)?.delete(wallet) ?? false;
+    },
+    async listFollows(userId) {
+      return [...(s.follows.get(userId) ?? new Map<string, number>()).entries()]
+        .map(([wallet, createdAt]) => ({ wallet, createdAt }))
+        .sort((a, b) => b.createdAt - a.createdAt || a.wallet.localeCompare(b.wallet));
+    },
+
+    async getSettings(userId) {
+      return view(userId);
+    },
+    async updateSettings(userId, u) {
+      if (u.slippageBps < 0 || u.slippageBps > 500) throw new Error("slippage_bps check violated"); // mirrors the DB check
+      Object.assign(userRow(userId), u);
+      return view(userId);
     },
   };
 }

@@ -47,6 +47,8 @@
   /* hairlines */
   --color-line: rgb(255 255 255 / 0.08);
   --color-line-strong: rgb(255 255 255 / 0.14);
+  /* form control boundaries (WCAG 1.4.11): 3.6:1 on #16191d, 3.2:1 on #1e2328 */
+  --color-control: #69737e;
 
   /* type: editorial serif display, precise grotesk UI, mono numbers */
   --font-display: var(--font-instrument-serif), ui-serif, Georgia, serif;

@@ -4,7 +4,7 @@ import "server-only";
  * Every error is rethrown as a generic message: no SQL, keys or row data leak
  * into responses or logs.
  */
-import type { DataStore, StoredMarket, StoredStats, StoredTrade } from "./data-store";
+import type { DataStore, StoredMarket, StoredStats, StoredTrade, UserSettings } from "./data-store";
 import { getDb } from "./db";
 import type { Phase, Side } from "./schemas";
 import type { TradeInsert, TradeSide } from "./trades";
@@ -319,4 +319,71 @@ export const supabaseDataStore: DataStore = {
     if (error) fail("last synced");
     return data ? sec(data.updated_at as string) : null;
   },
+
+  async follow(userId, wallet) {
+    const { data, error } = await getDb()
+      .from("follows")
+      .upsert({ user_id: userId, leader_wallet: wallet }, { onConflict: "user_id,leader_wallet", ignoreDuplicates: true })
+      .select("leader_wallet");
+    if (error) fail("follow");
+    return (data ?? []).length > 0;
+  },
+
+  async unfollow(userId, wallet) {
+    const { data, error } = await getDb()
+      .from("follows")
+      .delete()
+      .eq("user_id", userId)
+      .eq("leader_wallet", wallet)
+      .select("leader_wallet");
+    if (error) fail("unfollow");
+    return (data ?? []).length > 0;
+  },
+
+  async listFollows(userId) {
+    const { data, error } = await getDb()
+      .from("follows")
+      .select("leader_wallet, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+    if (error) fail("list follows");
+    return (data ?? []).map((r) => ({ wallet: r.leader_wallet as string, createdAt: sec(r.created_at as string) ?? 0 }));
+  },
+
+  async getSettings(userId) {
+    const { data, error } = await getDb()
+      .from("users")
+      .select(SETTINGS_COLUMNS)
+      .eq("id", userId)
+      .maybeSingle();
+    if (error) fail("get settings");
+    return data ? toSettings(data as SettingsRow) : null;
+  },
+
+  async updateSettings(userId, u) {
+    const { data, error } = await getDb()
+      .from("users")
+      .update({ max_stake_usdc: u.maxStakeUsdc, slippage_bps: u.slippageBps, alerts_enabled: u.alertsEnabled })
+      .eq("id", userId)
+      .select(SETTINGS_COLUMNS)
+      .single();
+    if (error || !data) fail("update settings");
+    return toSettings(data as SettingsRow);
+  },
 };
+
+const SETTINGS_COLUMNS = "max_stake_usdc, slippage_bps, alerts_enabled, telegram_chat_id";
+type SettingsRow = {
+  max_stake_usdc: string | number;
+  slippage_bps: number;
+  alerts_enabled: boolean;
+  telegram_chat_id: number | string | null;
+};
+function toSettings(r: SettingsRow): UserSettings {
+  return {
+    maxStakeUsdc: Number(r.max_stake_usdc).toFixed(2),
+    slippageBps: r.slippage_bps,
+    alertsEnabled: r.alerts_enabled,
+    telegramLinked: r.telegram_chat_id !== null,
+  };
+}

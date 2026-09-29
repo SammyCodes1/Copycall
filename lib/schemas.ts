@@ -284,3 +284,28 @@ export const VerifyRequestSchema = z
     signature: SignatureSchema, // base58 ed25519 signature of the SIWS message
   })
   .strict();
+
+// ---------- follow + settings (our own routes) ----------
+
+export const FollowRequestSchema = z.object({ wallet: PubkeySchema }).strict();
+
+/** Per-copy stake limits (USDC). Panta rejects tiny fills; 1000 keeps a demo account safe. */
+export const MIN_STAKE_USDC = 1;
+export const MAX_STAKE_USDC = 1000;
+
+export const SettingsRequestSchema = z
+  .object({
+    // Decimal string or number, at most 2 dp; normalised to "12.50".
+    maxStakeUsdc: z
+      .union([z.string(), z.number()])
+      .transform((v) => String(v).trim())
+      .pipe(z.string().regex(/^\d{1,4}(\.\d{1,2})?$/, "Max stake must be a USDC amount like 5 or 12.50"))
+      .transform((v) => Number(v))
+      .refine((n) => n >= MIN_STAKE_USDC && n <= MAX_STAKE_USDC, `Max stake must be ${MIN_STAKE_USDC}-${MAX_STAKE_USDC} USDC`)
+      .transform((n) => n.toFixed(2)),
+    // Hard requirement 4: server-side cap of 500 bps (5%), whatever the client sends.
+    slippageBps: z.number().int().min(0).max(MAX_SLIPPAGE_BPS, "Slippage can't exceed 5%"),
+    alertsEnabled: z.boolean(),
+  })
+  .strict();
+export type SettingsRequest = z.infer<typeof SettingsRequestSchema>;

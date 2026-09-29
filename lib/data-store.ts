@@ -44,6 +44,15 @@ export type StoredStats = {
   updatedAt: number;
 };
 
+export type UserSettings = {
+  maxStakeUsdc: string; // decimal string, 2 dp
+  slippageBps: number; // 0..500 (hard max enforced in zod AND a DB check)
+  alertsEnabled: boolean;
+  telegramLinked: boolean;
+};
+
+export type SettingsUpdate = Pick<UserSettings, "maxStakeUsdc" | "slippageBps" | "alertsEnabled">;
+
 export interface DataStore {
   // ---- markets
   /** Insert or update id/address/title/status. Never touches outcome or creator fields. */
@@ -90,4 +99,15 @@ export interface DataStore {
   counts(): Promise<{ markets: number; callers: number; trades: number; resolved: number }>;
   /** Most recent trader_stats refresh (unix seconds), or null before the first sync. */
   lastSyncedAt(): Promise<number | null>;
+
+  // ---- follows (user_id from a verified session only)
+  /** Returns false if already following. */
+  follow(userId: string, leaderWallet: string): Promise<boolean>;
+  /** Returns false if not following. */
+  unfollow(userId: string, leaderWallet: string): Promise<boolean>;
+  listFollows(userId: string): Promise<{ wallet: string; createdAt: number }[]>;
+
+  // ---- settings (users row)
+  getSettings(userId: string): Promise<UserSettings | null>;
+  updateSettings(userId: string, s: SettingsUpdate): Promise<UserSettings>;
 }

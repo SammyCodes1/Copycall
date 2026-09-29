@@ -135,8 +135,8 @@ export function WalletButton({
 
   if (sessionWallet) {
     return (
-      <div className="flex items-center gap-2">
-        <span className="inline-flex h-9 items-center gap-2 rounded-[var(--radius-control)] border border-line px-3 text-sm">
+      <div className="flex items-center gap-1 sm:gap-2">
+        <span className="inline-flex h-9 items-center gap-2 whitespace-nowrap rounded-[var(--radius-control)] border border-line px-2.5 text-sm sm:px-3">
           <span aria-hidden className="size-1.5 rounded-full bg-brand-400" />
           <span className="sr-only">Signed in as </span>
           <span className="num">{shortAddress(sessionWallet)}</span>
