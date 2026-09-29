@@ -11,6 +11,7 @@ import positionsJson from "@/fixtures/positions.json";
 import tradesJson from "@/fixtures/trades.json";
 import { getMinResolvedCalls } from "./env";
 import type { PantaMarket, PantaPosition, PantaTradeRow, Side } from "./schemas";
+import { safeTitle } from "./text";
 import { computeTraderStats, rankTraders, type TraderStats } from "./stats";
 
 /** "Now" for the fixtures, so relative times stay stable. */
@@ -22,10 +23,7 @@ const markets = marketsJson as unknown as PantaMarket[];
 const creators = creatorsJson as Record<string, string>;
 const marketById = new Map(markets.map((m) => [m.marketId, m]));
 
-/** Titles are untrusted Panta strings: truncate to 120 chars (addendum G). */
-export function safeTitle(t: string): string {
-  return t.length > 120 ? `${t.slice(0, 119)}…` : t;
-}
+export { safeTitle };
 
 export type StreakResult = "W" | "L";
 

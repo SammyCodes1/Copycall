@@ -53,7 +53,7 @@ describe("supabase migrations", () => {
 
   it("anon/authenticated cannot read or write private tables", async () => {
     for (const role of ["anon", "authenticated"]) {
-      for (const t of ["users", "follows", "alerts", "copies", "auth_nonces", "telegram_link_codes", "rate_limits"]) {
+      for (const t of ["users", "follows", "alerts", "copies", "auth_nonces", "telegram_link_codes", "rate_limits", "positions"]) {
         await expect(asRole(role, () => db.query(`select * from public.${t}`)), `${role} ${t}`).rejects.toThrow(/permission denied/);
       }
       await expect(asRole(role, () => db.query(`insert into public.markets (id, address, title, status) values ('x','x','x','primary')`))).rejects.toThrow();
@@ -94,6 +94,39 @@ describe("supabase migrations", () => {
       ),
     );
     expect(again.rows[0].session_version).toBe(2);
+  });
+
+  it("anon cannot call the sync RPC functions", async () => {
+    for (const role of ["anon", "authenticated"]) {
+      await expect(asRole(role, () => db.query(`select public.wallets_to_refresh(10)`))).rejects.toThrow(/permission denied/);
+      await expect(asRole(role, () => db.query(`select public.replace_positions('w', '[]'::jsonb)`))).rejects.toThrow(/permission denied/);
+    }
+  });
+
+  it("replace_positions swaps a wallet's snapshot; wallets_to_refresh puts stale stats first", async () => {
+    await asRole("service_role", async () => {
+      await db.query(`insert into public.markets (id, address, title, status) values ('mSync','mSync','Sync','primary') on conflict do nothing`);
+      const rows = [
+        { market_id: "mSync", side: "YES", shares: "10.5", phase: "primary", outcome: null, claimable: false, claimed: false },
+        { market_id: "mSync", side: "NO", shares: "2", phase: "primary", outcome: null, claimable: false, claimed: false },
+      ];
+      await db.query(`select public.replace_positions('wSync', $1::jsonb)`, [JSON.stringify(rows)]);
+      await db.query(`select public.replace_positions('wSync', $1::jsonb)`, [JSON.stringify(rows.slice(0, 1))]);
+      const p = await db.query<{ n: number }>(`select count(*)::int as n from public.positions where wallet = 'wSync'`);
+      expect(p.rows[0].n).toBe(1);
+      await expect(
+        db.query(`select public.replace_positions('wSync', $1::jsonb)`, [JSON.stringify([{ ...rows[0], side: "MAYBE" }])]),
+      ).rejects.toThrow(/check/);
+
+      await db.query(
+        `insert into public.trades (signature, market_id, wallet, side, shares) values ('sSyncA','mSync','wFresh','YES',1), ('sSyncB','mSync','wStale','NO',1), ('sSyncC','mSync','wNew','NO',1)`,
+      );
+      await db.query(`insert into public.trader_stats (wallet, updated_at) values ('wFresh', now()), ('wStale', now() - interval '1 day')`);
+      const r = await db.query<{ w: string }>(`select w from public.wallets_to_refresh(100) as w`);
+      const order = r.rows.map((x) => x.w).filter((w) => ["wFresh", "wStale", "wNew"].includes(w));
+      expect(order).toEqual(["wNew", "wStale", "wFresh"]);
+      await expect(db.query(`update public.trader_stats set recent_results = 'WX' where wallet = 'wFresh'`)).rejects.toThrow(/check/);
+    });
   });
 
   it("consume_auth_nonce is single-use and bound to the wallet", async () => {

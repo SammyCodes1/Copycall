@@ -18,10 +18,13 @@ export type TraderStats = {
   creatorTradeCount: number;
 };
 
+/** Minimal trade shape needed for stats: Panta rows and our stored trades both fit. */
+export type StatsTrade = Pick<PantaTradeRow, "wallet" | "marketId" | "blockTime">;
+
 export function computeTraderStats(
   wallet: string,
   positions: PantaPosition[],
-  trades: PantaTradeRow[],
+  trades: StatsTrade[],
   creatorByMarket: Record<string, string | null | undefined>,
 ): TraderStats {
   const resolved = positions.filter((p) => p.phase === "resolved" && p.outcome);
@@ -45,4 +48,26 @@ export function rankTraders(stats: TraderStats[], minResolved: number): TraderSt
   return stats
     .filter((s) => s.resolvedCalls >= minResolved)
     .sort((a, b) => b.hitRate - a.hitRate || b.resolvedCalls - a.resolvedCalls || a.wallet.localeCompare(b.wallet));
+}
+
+/**
+ * W/L letters for a wallet's resolved positions, oldest -> newest (max 12),
+ * ordered by the wallet's last trade in each market.
+ */
+export function recentResults(
+  positions: { marketId: string; side: string; phase: string; outcome?: string | null }[],
+  trades: { marketId: string; blockTime: number | null }[],
+  max = 12,
+): string {
+  const lastTrade = new Map<string, number>();
+  for (const t of trades) {
+    if (t.blockTime !== null) lastTrade.set(t.marketId, Math.max(lastTrade.get(t.marketId) ?? 0, t.blockTime));
+  }
+  return positions
+    .filter((p) => p.phase === "resolved" && p.outcome)
+    .map((p) => ({ t: lastTrade.get(p.marketId) ?? 0, r: p.side.toLowerCase() === p.outcome ? "W" : "L" }))
+    .sort((a, b) => a.t - b.t)
+    .slice(-max)
+    .map((x) => x.r)
+    .join("");
 }
