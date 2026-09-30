@@ -72,7 +72,7 @@ values, which the app does not currently read (the browser never queries Supabas
 | `MIN_RESOLVED_CALLS` | Default 5 |
 | `CRON_SECRET` | >= 16 chars (use 32+). Cron routes need `Authorization: Bearer <CRON_SECRET>`; query-string secrets are refused |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` | Both needed for Telegram. If either is missing, alerts are written to the server log instead |
-| `PANTA_PROGRAM_IDS` | Used by transaction validation (later batch) |
+| `PANTA_PROGRAM_IDS` | Comma-separated Panta program ids for the transaction guard. Required in real mode: copy and claim fail closed (503) without it |
 
 ## Batch 2: sync, leaderboard, follow, alerts
 
@@ -119,6 +119,29 @@ link is `APP_URL/copy/<trade id>`, so amounts and sides never go in a URL. Alert
 `curl -H "Authorization: Bearer $CRON_SECRET" localhost:3000/api/cron/alerts` after the next
 minute. Every fixture wallet makes one simulated buy per minute, and the alert shows up in the server log
 (`alert (Telegram not configured)`) because Telegram isn't configured.
+
+## Batch 3: copy and claim
+
+Flow (all Panta calls and all checks run on the server; the browser only signs):
+
+1. `GET /api/copy/[tradeId]/quote`: session required. Market and side come from the stored trade, the amount
+   from your settings; query parameters are ignored. Returns a single-use `quoteToken` (~75 s). Cached 10 s,
+   10/min per user.
+2. `POST /api/copy/[tradeId]/build` `{quoteToken}`: Panta build, then `lib/tx-guard.ts` checks the instructions
+   (program allowlist, you are the only signer and fee payer, one Panta instruction for this market, no
+   approvals / authority changes / closes, compute-budget and priority-fee caps, USDC out ≤ stake + quoted
+   fee), assembles the v0 transaction, and simulates it (USDC decrease ≤ limit, other token accounts
+   unchanged, SOL spend ≤ 0.02). The exact bytes are stored as a pending order (90 s).
+3. The wallet signs those exact bytes. `POST /api/copy/confirm` `{orderId, signedTransaction}`: the message
+   hash must match, the signature must verify for the session wallet and be unused. The server broadcasts,
+   waits for confirmation, re-checks the landed transaction, records the copy atomically
+   (`complete_order`), then reports it to Panta (`POST /trades/`).
+4. `/positions` (`GET /api/positions`, 30 s cache) lists holdings from Panta's index; a resolved win shows
+   Claim (`POST /api/claim/build` `{marketId}` then `/api/claim/confirm`), with no USDC allowed to leave.
+
+Mock mode runs the same flow against a synthetic in-memory chain (`lib/mock/chain-mock.ts`); signing is
+simulated server-side and labelled "Simulated signing" everywhere. Demo: sign in, follow a trader, run both
+crons (see Batch 2), open the copy link from the log, Review and sign, then visit `/positions` and claim.
 
 ## Real mode setup (Supabase)
 
