@@ -65,7 +65,11 @@ export default async function SettingsPage() {
         <h2 id="telegram-title" className="mb-4 font-display text-2xl">
           Telegram alerts
         </h2>
-        <TelegramConnect linked={settings?.telegramLinked ?? false} configured={isTelegramConfigured()} />
+        <TelegramConnect
+          linked={settings?.telegramLinked ?? false}
+          unlinkedAt={settings?.telegramUnlinkedAt ?? null}
+          configured={isTelegramConfigured()}
+        />
       </section>
 
       <section aria-labelledby="following-title" className="card mt-6 overflow-hidden">

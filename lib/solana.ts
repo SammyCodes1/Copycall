@@ -20,9 +20,16 @@ export function getConnection(): Connection {
   if (connection) return connection;
   const url = requireEnv("SOLANA_RPC_URL");
   if (!/^https:\/\//.test(url)) throw new Error("SOLANA_RPC_URL must be an https URL");
-  connection = new Connection(url, { commitment: "confirmed", disableRetryOnRateLimit: false });
+  connection = new Connection(url, {
+    commitment: "confirmed",
+    disableRetryOnRateLimit: false,
+    // Every RPC call gives up after 15 s, well under the crons' 120 s (audit B2-11).
+    fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(RPC_TIMEOUT_MS) }),
+  });
   return connection;
 }
+
+export const RPC_TIMEOUT_MS = 15_000;
 
 export type CreatorLookup = { creator: string; verified: false };
 

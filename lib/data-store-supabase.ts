@@ -4,7 +4,7 @@ import "server-only";
  * Every error is rethrown as a generic message: no SQL, keys or row data leak
  * into responses or logs.
  */
-import type { DataStore, StoredMarket, StoredStats, StoredTrade, UserSettings } from "./data-store";
+import type { DataStore, FollowResult, StoredMarket, StoredStats, StoredTrade, UserSettings } from "./data-store";
 import { getDb } from "./db";
 import type { Phase, Side } from "./schemas";
 import type { TradeInsert, TradeSide } from "./trades";
@@ -29,7 +29,8 @@ type TradeRow = {
   is_creator_trade: boolean;
   panta_id: string | null;
 };
-export const TRADE_COLUMNS = "id, signature, market_id, wallet, side, shares, fee, block_time, is_primary, is_creator_trade, panta_id";
+export const TRADE_COLUMNS =
+  "id, signature, market_id, wallet, side, shares, fee, block_time, is_primary, is_creator_trade, panta_id";
 
 export function toStoredTrade(r: TradeRow): StoredTrade {
   return {
@@ -119,26 +120,29 @@ export const supabaseDataStore: DataStore = {
     const { error } = await getDb()
       .from("markets")
       .upsert(
-        rows.map((r) => ({ id: r.id, address: r.id, title: r.title, status: r.status, updated_at: new Date().toISOString() })),
+        rows.map((r) => ({
+          id: r.id,
+          address: r.id,
+          title: r.title,
+          status: r.status,
+          updated_at: new Date().toISOString(),
+        })),
         { onConflict: "id" },
       );
     if (error) fail("upsert markets");
   },
 
-  async marketsNeedingTrades(limit) {
-    const { data, error } = await getDb()
-      .from("markets")
-      .select("id, status")
-      .eq("trades_final", false)
-      .order("trades_synced_at", { ascending: true, nullsFirst: true })
-      .order("id")
-      .limit(limit);
+  async marketsNeedingTrades(limit, nowSec) {
+    const { data, error } = await getDb().rpc("markets_needing_trades", { p_limit: limit, p_now: iso(nowSec) });
     if (error) fail("markets needing trades");
     return (data ?? []) as { id: string; status: Phase }[];
   },
 
   async markTradesSynced(id, final, nowSec) {
-    const { error } = await getDb().from("markets").update({ trades_synced_at: iso(nowSec), trades_final: final }).eq("id", id);
+    const { error } = await getDb()
+      .from("markets")
+      .update({ trades_synced_at: iso(nowSec), trades_final: final })
+      .eq("id", id);
     if (error) fail("mark trades synced");
   },
 
@@ -169,7 +173,11 @@ export const supabaseDataStore: DataStore = {
 
   async getCreators(ids) {
     if (!ids.length) return {};
-    const { data, error } = await getDb().from("markets").select("id, creator_wallet").in("id", ids).not("creator_wallet", "is", null);
+    const { data, error } = await getDb()
+      .from("markets")
+      .select("id, creator_wallet")
+      .in("id", ids)
+      .not("creator_wallet", "is", null);
     if (error) fail("get creators");
     return Object.fromEntries((data ?? []).map((r) => [r.id as string, r.creator_wallet as string]));
   },
@@ -201,8 +209,18 @@ export const supabaseDataStore: DataStore = {
     return ((data ?? []) as TradeRow[]).map(toStoredTrade);
   },
 
-  async walletsToRefresh(limit) {
-    const { data, error } = await getDb().rpc("wallets_to_refresh", { p_limit: limit });
+  async recordSyncFailure(kind, key, nowSec) {
+    const { error } = await getDb().rpc("record_sync_failure", { p_kind: kind, p_key: key, p_now: iso(nowSec) });
+    if (error) fail("record sync failure");
+  },
+
+  async clearSyncFailure(kind, key) {
+    const { error } = await getDb().from("sync_failures").delete().eq("kind", kind).eq("key", key);
+    if (error) fail("clear sync failure");
+  },
+
+  async walletsToRefresh(limit, nowSec) {
+    const { data, error } = await getDb().rpc("wallets_to_refresh", { p_limit: limit, p_now: iso(nowSec) });
     if (error) fail("wallets to refresh");
     return (data ?? []) as string[];
   },
@@ -254,6 +272,12 @@ export const supabaseDataStore: DataStore = {
       .limit(limit);
     if (error) fail("leaderboard");
     return ((data ?? []) as StatsRow[]).map(toStoredStats);
+  },
+
+  async traderRank(wallet, minResolved) {
+    const { data, error } = await getDb().rpc("trader_rank", { p_wallet: wallet, p_min_resolved: minResolved });
+    if (error) fail("trader rank");
+    return typeof data === "number" ? data : null;
   },
 
   async getTraderStats(wallet) {
@@ -320,13 +344,11 @@ export const supabaseDataStore: DataStore = {
     return data ? sec(data.updated_at as string) : null;
   },
 
-  async follow(userId, wallet) {
-    const { data, error } = await getDb()
-      .from("follows")
-      .upsert({ user_id: userId, leader_wallet: wallet }, { onConflict: "user_id,leader_wallet", ignoreDuplicates: true })
-      .select("leader_wallet");
-    if (error) fail("follow");
-    return (data ?? []).length > 0;
+  async follow(userId, wallet, max) {
+    // One DB step under a row lock on the user (follow_capped): the cap can't be raced (B2-03).
+    const { data, error } = await getDb().rpc("follow_capped", { p_user_id: userId, p_wallet: wallet, p_max: max });
+    if (error || (data !== "followed" && data !== "already" && data !== "limit")) fail("follow");
+    return data as FollowResult;
   },
 
   async unfollow(userId, wallet) {
@@ -347,15 +369,14 @@ export const supabaseDataStore: DataStore = {
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
     if (error) fail("list follows");
-    return (data ?? []).map((r) => ({ wallet: r.leader_wallet as string, createdAt: sec(r.created_at as string) ?? 0 }));
+    return (data ?? []).map((r) => ({
+      wallet: r.leader_wallet as string,
+      createdAt: sec(r.created_at as string) ?? 0,
+    }));
   },
 
   async getSettings(userId) {
-    const { data, error } = await getDb()
-      .from("users")
-      .select(SETTINGS_COLUMNS)
-      .eq("id", userId)
-      .maybeSingle();
+    const { data, error } = await getDb().from("users").select(SETTINGS_COLUMNS).eq("id", userId).maybeSingle();
     if (error) fail("get settings");
     return data ? toSettings(data as SettingsRow) : null;
   },
@@ -371,18 +392,49 @@ export const supabaseDataStore: DataStore = {
     return toSettings(data as SettingsRow);
   },
 
-  async createLinkCode(userId, codeHash, expiresAtSec) {
+  async createLinkCode(userId, _wallet, codeHash, expiresAtSec) {
     const db = getDb();
     const del = await db.from("telegram_link_codes").delete().eq("user_id", userId);
     if (del.error) fail("clear link codes");
-    const { error } = await db.from("telegram_link_codes").insert({ code: codeHash, user_id: userId, expires_at: iso(expiresAtSec) });
+    const { error } = await db
+      .from("telegram_link_codes")
+      .insert({ code: codeHash, user_id: userId, expires_at: iso(expiresAtSec) });
     if (error) fail("create link code");
+  },
+
+  async peekLinkCode(codeHash) {
+    const { data, error } = await getDb().rpc("peek_link_code", { p_code_hash: codeHash });
+    if (error) fail("peek link code");
+    const row = (data ?? [])[0] as { user_id: string; wallet: string } | undefined;
+    return row ? { userId: row.user_id, wallet: row.wallet } : null;
+  },
+
+  async linkedWalletForChat(chatId) {
+    const { data, error } = await getDb().rpc("linked_wallet_for_chat", { p_chat_id: chatId });
+    if (error) fail("linked wallet for chat");
+    return typeof data === "string" ? data : null;
   },
 
   async linkTelegramChat(codeHash, chatId) {
     const { data, error } = await getDb().rpc("link_telegram_chat", { p_code_hash: codeHash, p_chat_id: chatId });
     if (error) fail("link telegram chat");
-    return typeof data === "string" ? data : null;
+    const r = (data ?? [])[0] as
+      | {
+          user_id: string;
+          wallet: string;
+          previous_user_id: string | null;
+          previous_wallet: string | null;
+          previous_chat_id: number | string | null;
+        }
+      | undefined;
+    if (!r) return null;
+    return {
+      userId: r.user_id,
+      wallet: r.wallet,
+      previousUserId: r.previous_user_id,
+      previousWallet: r.previous_wallet,
+      previousChatId: r.previous_chat_id === null ? null : Number(r.previous_chat_id),
+    };
   },
 
   async pauseAlertsForChat(chatId) {
@@ -399,14 +451,19 @@ export const supabaseDataStore: DataStore = {
   async alertSubscriptions() {
     const { data, error } = await getDb().rpc("alert_subscriptions");
     if (error) fail("alert subscriptions");
-    return ((data ?? []) as { user_id: string; leader_wallet: string; followed_at: string; telegram_chat_id: number | string | null }[]).map(
-      (r) => ({
-        userId: r.user_id,
-        leaderWallet: r.leader_wallet,
-        followedAt: sec(r.followed_at) ?? 0,
-        chatId: r.telegram_chat_id === null ? null : Number(r.telegram_chat_id),
-      }),
-    );
+    return (
+      (data ?? []) as {
+        user_id: string;
+        leader_wallet: string;
+        followed_at: string;
+        telegram_chat_id: number | string | null;
+      }[]
+    ).map((r) => ({
+      userId: r.user_id,
+      leaderWallet: r.leader_wallet,
+      followedAt: sec(r.followed_at) ?? 0,
+      chatId: r.telegram_chat_id === null ? null : Number(r.telegram_chat_id),
+    }));
   },
 
   async tradesBySignatures(sigs) {
@@ -433,24 +490,45 @@ export const supabaseDataStore: DataStore = {
       )
       .select("id, user_id, trade_id");
     if (error) fail("create alerts");
-    return (data ?? []).map((r) => ({ id: r.id as string, userId: r.user_id as string, tradeId: r.trade_id as string }));
+    return (data ?? []).map((r) => ({
+      id: r.id as string,
+      userId: r.user_id as string,
+      tradeId: r.trade_id as string,
+    }));
   },
 
   async setAlertStatus(id, status, sentAtSec) {
-    const { error } = await getDb()
-      .from("alerts")
-      .update({ status, sent_at: sentAtSec === null ? null : iso(sentAtSec) })
-      .eq("id", id);
+    const { error } = await getDb().rpc("set_alert_status", {
+      p_id: id,
+      p_status: status,
+      p_sent_at: sentAtSec === null ? null : iso(sentAtSec),
+    });
     if (error) fail("set alert status");
+  },
+
+  async claimAlertRetries(p) {
+    const { data, error } = await getDb().rpc("claim_alert_retries", {
+      p_limit: p.limit,
+      p_max_attempts: p.maxAttempts,
+      p_max_age_sec: p.maxAgeSec,
+      p_min_gap_sec: p.minGapSec,
+    });
+    if (error) fail("claim alert retries");
+    return ((data ?? []) as { id: string; user_id: string; trade_id: string }[]).map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      tradeId: r.trade_id,
+    }));
   },
 };
 
-const SETTINGS_COLUMNS = "max_stake_usdc, slippage_bps, alerts_enabled, telegram_chat_id";
+const SETTINGS_COLUMNS = "max_stake_usdc, slippage_bps, alerts_enabled, telegram_chat_id, telegram_unlinked_at";
 type SettingsRow = {
   max_stake_usdc: string | number;
   slippage_bps: number;
   alerts_enabled: boolean;
   telegram_chat_id: number | string | null;
+  telegram_unlinked_at: string | null;
 };
 function toSettings(r: SettingsRow): UserSettings {
   return {
@@ -458,5 +536,6 @@ function toSettings(r: SettingsRow): UserSettings {
     slippageBps: r.slippage_bps,
     alertsEnabled: r.alerts_enabled,
     telegramLinked: r.telegram_chat_id !== null,
+    telegramUnlinkedAt: r.telegram_chat_id === null ? sec(r.telegram_unlinked_at) : null,
   };
 }

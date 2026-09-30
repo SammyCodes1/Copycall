@@ -3,7 +3,9 @@ import "server-only";
  * grammY bot, running as a webhook route inside Next.js (MVP features 6-7).
  *  - POST /api/telegram/webhook checks X-Telegram-Bot-Api-Secret-Token first
  *    (constant time) and only then hands the update to grammY.
- *  - Commands: /start <code> links the chat, /stop pauses alerts.
+ *  - /start <code> shows the wallet and asks for an inline-button confirmation;
+ *    the button (callback_query) links the chat (audit B2-01). /stop pauses alerts.
+ *  - API calls time out after 10 s, well under the crons' 120 s (B2-11).
  *  - Every message is plain text (no parse_mode) with link previews off.
  * If TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET are missing, Telegram is
  * "not configured": the webhook rejects everything and alerts are logged.
@@ -11,20 +13,41 @@ import "server-only";
 import { Bot } from "grammy";
 import { getDataStore } from "./data";
 import { readEnv } from "./env";
-import { HELP_TEXT, handleStart, handleStop } from "./telegram-core";
+import { HELP_TEXT, handleLinkConfirm, handleStart, handleStop } from "./telegram-core";
+import { isValidWebhookSecret } from "./telegram-routes";
 
+/** Telegram API timeout (seconds). Must stay well below the cron maxDuration (120 s). */
+export const TELEGRAM_TIMEOUT_SEC = 10;
+
+/** A weak or malformed webhook secret counts as "not configured" (fail closed, B2-05). */
 export function isTelegramConfigured(): boolean {
   const env = readEnv();
-  return !!env.TELEGRAM_BOT_TOKEN && !!env.TELEGRAM_WEBHOOK_SECRET;
+  return !!env.TELEGRAM_BOT_TOKEN && isValidWebhookSecret(env.TELEGRAM_WEBHOOK_SECRET);
 }
 
 function createBot(token: string): Bot {
-  const bot = new Bot(token);
+  const bot = new Bot(token, { client: { timeoutSeconds: TELEGRAM_TIMEOUT_SEC } });
+  const plain = { link_preview_options: { is_disabled: true } };
   bot.command("start", async (ctx) => {
     if (!ctx.chat) return;
-    await ctx.reply(await handleStart(getDataStore(), ctx.chat, ctx.match ?? ""), {
-      link_preview_options: { is_disabled: true },
+    const r = await handleStart(getDataStore(), ctx.chat, ctx.match ?? "");
+    await ctx.reply(r.text, r.buttons ? { ...plain, reply_markup: { inline_keyboard: r.buttons } } : plain);
+  });
+  bot.on("callback_query:data", async (ctx) => {
+    const msg = ctx.callbackQuery.message;
+    const { reply, notices } = await handleLinkConfirm(getDataStore(), {
+      chat: msg?.chat,
+      fromId: ctx.from.id,
+      data: ctx.callbackQuery.data,
     });
+    await ctx.answerCallbackQuery().catch(() => {});
+    // Replace the question (and its buttons) with the outcome.
+    if (msg) await ctx.editMessageText(reply, plain).catch(() => ctx.reply(reply, plain));
+    for (const n of notices) {
+      await ctx.api.sendMessage(n.chatId, n.text, plain).catch((err) => {
+        console.error("[telegram] notice failed", err instanceof Error ? err.message : "error");
+      });
+    }
   });
   bot.command("stop", async (ctx) => {
     if (!ctx.chat) return;
@@ -33,7 +56,9 @@ function createBot(token: string): Bot {
   bot.on("message", async (ctx) => {
     if (ctx.chat.type === "private") await ctx.reply(HELP_TEXT);
   });
-  bot.catch((err) => console.error("[telegram] handler error", err.error instanceof Error ? err.error.message : "error"));
+  bot.catch((err) =>
+    console.error("[telegram] handler error", err.error instanceof Error ? err.error.message : "error"),
+  );
   return bot;
 }
 

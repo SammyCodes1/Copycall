@@ -6,19 +6,27 @@
 
 export const TITLE_MAX = 120;
 
-// C0/C1 control characters (titles are single-line, so newlines go too) and
-// Unicode bidi marks/overrides/isolates, which can visually reorder text in a
-// chat message or on the page.
-const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+// C0/C1 controls (titles are single-line, so newlines go too) become spaces.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+// Every format / invisible character (Unicode Cf: bidi marks and overrides,
+// ZWSP/ZWNJ/ZWJ, word joiner, invisible operators, BOM, soft hyphen, ALM...)
+// is removed outright (audit B2-09), plus the variation selectors.
+const INVISIBLE = /[\p{Cf}\u180b-\u180f\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/gu;
 
-/** Strip control/bidi characters and collapse whitespace. */
+/** NFKC-normalise, strip control/format/invisible characters, collapse whitespace. */
 export function cleanText(t: string): string {
-  return t.replace(UNSAFE_CHARS, " ").replace(/\s+/g, " ").trim();
+  return t.normalize("NFKC").replace(CONTROL, " ").replace(INVISIBLE, "").replace(/\s+/g, " ").trim();
+}
+
+/** Truncate to `max` code points with an ellipsis, never splitting a surrogate pair. */
+export function truncate(t: string, max = TITLE_MAX): string {
+  const cps = Array.from(t);
+  return cps.length > max ? `${cps.slice(0, max - 1).join("")}…` : t;
 }
 
 /** Clean and truncate a market title to at most 120 characters (with an ellipsis). */
 export function safeTitle(t: string | null | undefined): string {
   const c = cleanText(t ?? "");
   if (!c) return "Untitled market";
-  return c.length > TITLE_MAX ? `${c.slice(0, TITLE_MAX - 1)}…` : c;
+  return truncate(c);
 }

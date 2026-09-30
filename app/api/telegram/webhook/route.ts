@@ -1,38 +1,48 @@
 import { z } from "zod";
 import { readEnv } from "@/lib/env";
-import { WEBHOOK_BODY_MAX, isAuthorizedWebhook } from "@/lib/telegram-routes";
+import { isAuthorizedWebhook, readBodyCapped } from "@/lib/telegram-routes";
 
 export const dynamic = "force-dynamic";
 
 const UpdateSchema = z.object({ update_id: z.number().int() }).passthrough();
 
+const ok = () => Response.json({ ok: true });
+
 /**
- * POST /api/telegram/webhook - Telegram updates. Rejected with 401 unless
- * X-Telegram-Bot-Api-Secret-Token matches TELEGRAM_WEBHOOK_SECRET (set via
- * setWebhook secret_token; see scripts/telegram-set-webhook.mjs).
+ * POST /api/telegram/webhook - Telegram updates.
+ *  - 401 unless TELEGRAM_WEBHOOK_SECRET is valid (32-256 of [A-Za-z0-9_-]) and
+ *    X-Telegram-Bot-Api-Secret-Token matches it in constant time (fails closed).
+ *  - After a valid secret the answer is ALWAYS 200 (audit B2-06): oversized,
+ *    malformed or failing updates are dropped, so Telegram never retries them.
  */
 export async function POST(request: Request) {
   if (!isAuthorizedWebhook(request, readEnv().TELEGRAM_WEBHOOK_SECRET)) {
     return Response.json({ code: "UNAUTHORIZED" }, { status: 401 });
   }
-  const text = await request.text();
-  if (text.length > WEBHOOK_BODY_MAX) return Response.json({ code: "BODY_TOO_LARGE" }, { status: 413 });
-  let parsed;
+  let update: z.infer<typeof UpdateSchema> | null = null;
   try {
-    parsed = UpdateSchema.safeParse(JSON.parse(text));
+    const text = await readBodyCapped(request);
+    if (text === null) {
+      console.warn("[telegram/webhook] dropped oversized update");
+      return ok();
+    }
+    const parsed = UpdateSchema.safeParse(JSON.parse(text));
+    if (parsed.success) update = parsed.data;
   } catch {
-    parsed = null;
+    update = null;
   }
-  if (!parsed?.success) return Response.json({ code: "INVALID_UPDATE" }, { status: 400 });
+  if (!update) {
+    console.warn("[telegram/webhook] dropped malformed update");
+    return ok();
+  }
 
   try {
     const { getBot } = await import("@/lib/telegram");
     const bot = await getBot();
     // grammY validates the update shape itself; handlers only reply in plain text.
-    await bot.handleUpdate(parsed.data as unknown as Parameters<typeof bot.handleUpdate>[0]);
+    await bot.handleUpdate(update as unknown as Parameters<typeof bot.handleUpdate>[0]);
   } catch (err) {
-    // Answer 200 anyway so Telegram doesn't retry the same update forever.
     console.error("[telegram/webhook] update failed", err instanceof Error ? err.message : "error");
   }
-  return Response.json({ ok: true });
+  return ok();
 }

@@ -7,7 +7,9 @@ import { ago, shortAddr } from "@/components/format";
 import { HitRate, SideTag, Tag } from "@/components/ui/Badge";
 import { FollowButton } from "@/components/FollowButton";
 import { WalletButton } from "@/components/WalletButton";
-import { getSession } from "@/lib/auth";
+import { headers } from "next/headers";
+import { getAuthStore, getSession } from "@/lib/auth";
+import { allowPublicRead } from "@/lib/public-limit";
 import { getDataStore } from "@/lib/data";
 import { isMockMode } from "@/lib/env";
 import { displayNowSec, getTraderProfile } from "@/lib/queries";
@@ -32,6 +34,22 @@ export default async function TraderPage({ params }: PageProps<"/trader/[wallet]
   const parsed = PubkeySchema.safeParse(raw);
   if (!parsed.success) notFound();
   const wallet = parsed.data;
+
+  if (!(await allowPublicRead(getAuthStore(), { headers: await headers() }, "trader-page"))) {
+    return (
+      <div className="mx-auto max-w-[40rem] px-4 pb-16 pt-12 sm:px-6 sm:pt-20">
+        <section role="alert" className="card px-5 py-8 sm:px-8">
+          <h1 className="text-lg font-semibold">Too many requests</h1>
+          <p className="mt-2 text-sm leading-6 text-fg-muted">
+            You&apos;re loading trader pages very quickly. Wait a minute and try again.
+          </p>
+          <Link href="/#leaderboard" className="mt-4 inline-block text-sm text-brand-300 underline underline-offset-4">
+            Back to the leaderboard
+          </Link>
+        </section>
+      </div>
+    );
+  }
 
   const mock = isMockMode();
   const nowSec = displayNowSec();

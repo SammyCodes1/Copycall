@@ -15,12 +15,13 @@
  * under the documented per-minute limits (read 120, positions 60), and
  * lib/panta.ts also throttles and backs off on 429. If Panta still returns 429,
  * the run stops that phase and the next run carries on (least recently synced first).
+ * Any other error only affects its own item, which is backed off (audit B2-04).
  *
  * Dependencies are injected so the job is unit-testable with fixtures.
  */
 import { createHash } from "node:crypto";
 import { formatAlert } from "./alert-message";
-import type { DataStore, StoredPosition } from "./data-store";
+import type { DataStore, StoredPosition, StoredTrade } from "./data-store";
 import { PantaError } from "./panta-error";
 import type {
   MarketListResponse,
@@ -60,6 +61,8 @@ export const RUN_BUDGET: RunBudget = { read: 90, positions: 45, creators: 20, ma
 
 /** Re-try creator lookups that found nothing after a day. */
 const CREATOR_RECHECK_SEC = 24 * 3600;
+/** After a failed creator lookup (RPC error), try again after about an hour. */
+const CREATOR_RETRY_SEC = 3600;
 
 export type SyncSummary = {
   marketsSeen: number;
@@ -71,6 +74,8 @@ export type SyncSummary = {
   walletsRefreshed: number;
   pantaCalls: { read: number; positions: number };
   stoppedEarly: string[];
+  /** Items that failed with a non-429 error this run (each is backed off, the run continues). */
+  failed: { marketPages: number; tapes: number; creators: number; wallets: number };
 };
 
 const FINAL_PHASES = new Set(["resolved", "cancelled"]);
@@ -94,30 +99,45 @@ export async function runLeaderboardSync(deps: SyncDeps): Promise<SyncSummary> {
     walletsRefreshed: 0,
     pantaCalls: { read: 0, positions: 0 },
     stoppedEarly: [],
+    failed: { marketPages: 0, tapes: 0, creators: 0, wallets: 0 },
   };
   const canRead = () => out.pantaCalls.read < budget.read;
 
-  // 1. Market catalog.
-  try {
-    let cursor: string | undefined;
-    for (let page = 0; page < budget.marketPages && canRead(); page++) {
+  // Per-item isolation (audit B2-04): a non-429 error on one market tape or
+  // wallet is logged, counted and backed off (skipped for 10 min .. 24 h), and
+  // the run carries on. Only 429 stops a phase; the next run resumes it.
+  const itemFailed = (what: string, err: unknown) =>
+    log(
+      `${what} failed: ${err instanceof PantaError ? `Panta ${err.status}` : err instanceof Error ? err.name : "error"}`,
+    );
+
+  // 1. Market catalog. A bad page ends paging for this run (there is no way to
+  // skip past a cursor), but the other phases still run.
+  let cursor: string | undefined;
+  for (let page = 0; page < budget.marketPages && canRead(); page++) {
+    try {
       out.pantaCalls.read++;
       const res = await panta.listMarkets({ cursor, limit: 50 });
       await store.upsertMarkets(res.items.map((m) => ({ id: m.marketId, title: m.title, status: m.phase })));
       out.marketsSeen += res.items.length;
       if (!res.nextCursor) break;
       cursor = res.nextCursor;
+    } catch (err) {
+      if (isRateLimited(err)) {
+        out.stoppedEarly.push("markets:rate_limited");
+      } else {
+        out.failed.marketPages++;
+        itemFailed("market page", err);
+      }
+      break;
     }
-  } catch (err) {
-    if (!isRateLimited(err)) throw err;
-    out.stoppedEarly.push("markets:rate_limited");
   }
 
   // 2. Trade tapes for markets that can still change (least recently synced first).
-  try {
-    const due = await store.marketsNeedingTrades(Math.max(0, budget.read - out.pantaCalls.read));
-    for (const m of due) {
-      if (!canRead()) break;
+  const due = await store.marketsNeedingTrades(Math.max(0, budget.read - out.pantaCalls.read), nowSec());
+  for (const m of due) {
+    if (!canRead()) break;
+    try {
       out.pantaCalls.read++;
       const tape = await panta.getMarketTrades(m.id, 200);
       out.tapesFetched++;
@@ -135,10 +155,16 @@ export async function runLeaderboardSync(deps: SyncDeps): Promise<SyncSummary> {
       }
       out.tradesInserted += (await store.insertTrades(rows)).length;
       await store.markTradesSynced(m.id, FINAL_PHASES.has(m.status), nowSec());
+      await store.clearSyncFailure("tape", m.id);
+    } catch (err) {
+      if (isRateLimited(err)) {
+        out.stoppedEarly.push("trades:rate_limited");
+        break;
+      }
+      out.failed.tapes++;
+      itemFailed(`tape for ${m.id}`, err);
+      await store.recordSyncFailure("tape", m.id, nowSec()).catch(() => {});
     }
-  } catch (err) {
-    if (!isRateLimited(err)) throw err;
-    out.stoppedEarly.push("trades:rate_limited");
   }
 
   // 3. Creators (on-chain, cached forever once found).
@@ -149,15 +175,17 @@ export async function runLeaderboardSync(deps: SyncDeps): Promise<SyncSummary> {
       await store.setMarketCreator(id, found?.creator ?? null, nowSec());
       if (found) out.creatorsResolved++;
     } catch (err) {
-      // RPC hiccup: leave unchecked so the next run retries. Never log RPC URLs.
-      log(`creator lookup failed for ${id}: ${err instanceof Error ? err.name : "error"}`);
+      // RPC hiccup: retry in about an hour rather than first in line every run.
+      out.failed.creators++;
+      itemFailed(`creator lookup for ${id}`, err);
+      await store.setMarketCreator(id, null, nowSec() - CREATOR_RECHECK_SEC + CREATOR_RETRY_SEC).catch(() => {});
     }
   }
 
   // 4. Positions + trader_stats for tracked wallets (stalest first).
-  try {
-    const wallets = await store.walletsToRefresh(budget.positions);
-    for (const wallet of wallets) {
+  const wallets = await store.walletsToRefresh(budget.positions, nowSec());
+  for (const wallet of wallets) {
+    try {
       out.pantaCalls.positions++;
       const { positions } = await panta.getPositions(wallet);
       const trades = await store.tradesForWallet(wallet, 1000);
@@ -173,15 +201,22 @@ export async function runLeaderboardSync(deps: SyncDeps): Promise<SyncSummary> {
       }));
       await store.replacePositions(wallet, stored);
       // Panta market rows have no outcome field; resolved positions carry it.
-      for (const p of positions) if (p.phase === "resolved" && p.outcome) await store.setMarketOutcome(p.marketId, p.outcome);
+      for (const p of positions)
+        if (p.phase === "resolved" && p.outcome) await store.setMarketOutcome(p.marketId, p.outcome);
 
       const s = computeTraderStats(wallet, positions, trades, creators);
       await store.upsertTraderStats({ ...s, recentResults: recentResults(positions, trades), updatedAt: nowSec() });
+      await store.clearSyncFailure("wallet", wallet);
       out.walletsRefreshed++;
+    } catch (err) {
+      if (isRateLimited(err)) {
+        out.stoppedEarly.push("positions:rate_limited");
+        break;
+      }
+      out.failed.wallets++;
+      itemFailed(`positions for ${wallet}`, err);
+      await store.recordSyncFailure("wallet", wallet, nowSec()).catch(() => {});
     }
-  } catch (err) {
-    if (!isRateLimited(err)) throw err;
-    out.stoppedEarly.push("positions:rate_limited");
   }
 
   return out;
@@ -217,6 +252,13 @@ export type AlertBudget = {
 };
 export const ALERT_BUDGET: AlertBudget = { read: 90, creators: 5, messages: 200 };
 
+/**
+ * Bounded retries (audit B2-11): failed sends and pending alerts a run never
+ * got to (crash, timeout, message budget) are retried at most 3 times in
+ * total, 2+ minutes apart, and only while the alert is under 30 minutes old.
+ */
+export const ALERT_RETRY = { limit: 50, maxAttempts: 3, maxAgeSec: 30 * 60, minGapSec: 110 };
+
 /** Trades older than this when first seen are not alerted (e.g. after downtime). */
 export const MAX_ALERT_AGE_SEC = 30 * 60;
 
@@ -229,6 +271,7 @@ export type AlertSummary = {
   logged: number;
   skipped: number;
   failed: number;
+  retried: number;
   pantaCalls: number;
   stoppedEarly: string[];
 };
@@ -252,6 +295,7 @@ export async function runAlerts(deps: AlertDeps): Promise<AlertSummary> {
     logged: 0,
     skipped: 0,
     failed: 0,
+    retried: 0,
     pantaCalls: 0,
     stoppedEarly: [],
   };
@@ -286,7 +330,12 @@ export async function runAlerts(deps: AlertDeps): Promise<AlertSummary> {
     // New buys only: primary-phase rows (the copy flow is a primary buy), a
     // clear side, recent, and from the leader themselves.
     const fresh = tape.items.filter(
-      (t) => t.wallet === leader && t.isPrimary && t.blockTime !== null && t.blockTime >= nowSec - MAX_ALERT_AGE_SEC && deriveSide(t),
+      (t) =>
+        t.wallet === leader &&
+        t.isPrimary &&
+        t.blockTime !== null &&
+        t.blockTime >= nowSec - MAX_ALERT_AGE_SEC &&
+        deriveSide(t),
     );
     if (fresh.length === 0) continue;
 
@@ -317,26 +366,60 @@ export async function runAlerts(deps: AlertDeps): Promise<AlertSummary> {
     }
     creators = await store.getCreators(marketIds);
 
-    const rows = fresh.filter((t) => known.has(t.marketId)).flatMap((t) => toTradeInsert(t, creators[t.marketId]) ?? []);
+    const rows = fresh
+      .filter((t) => known.has(t.marketId))
+      .flatMap((t) => toTradeInsert(t, creators[t.marketId]) ?? []);
     out.newTrades += (await store.insertTrades(rows)).length;
     // Includes trades the leaderboard sync stored first: they still deserve an alert.
     const stored = await store.tradesBySignatures(rows.map((r) => r.signature));
 
     const followers = byLeader.get(leader) ?? [];
     const wanted = stored.flatMap((t) =>
-      followers.filter((f) => t.blockTime !== null && t.blockTime >= f.followedAt).map((f) => ({ userId: f.userId, tradeId: t.id })),
+      followers
+        .filter((f) => t.blockTime !== null && t.blockTime >= f.followedAt)
+        .map((f) => ({ userId: f.userId, tradeId: t.id })),
     );
     const created = await store.createAlerts(wanted);
     out.alertsCreated += created.length;
     if (created.length === 0) continue;
 
-    const stats = await store.getTraderStats(leader);
-    const markets = new Map((await store.getMarkets(marketIds)).map((m) => [m.id, m]));
     const tradeById = new Map(stored.map((t) => [t.id, t]));
-    for (const a of created) {
-      const t = tradeById.get(a.tradeId)!;
-      const m = markets.get(t.marketId);
-      const f = followers.find((x) => x.userId === a.userId)!;
+    const outcome = await deliver(
+      created.map((a) => ({ ...a, trade: tradeById.get(a.tradeId)! })),
+      false,
+    );
+    if (outcome === "budget") break;
+  }
+
+  // Retry earlier failures / stragglers (bounded). Only when Telegram is on:
+  // without it every alert is logged immediately and never fails.
+  if (deps.send && !out.stoppedEarly.includes("message_budget")) {
+    const again = await store.claimAlertRetries(ALERT_RETRY);
+    const items = [];
+    for (const a of again) {
+      const trade = await store.getTradeById(a.tradeId);
+      if (trade) items.push({ ...a, trade });
+      else await store.setAlertStatus(a.id, "skipped", null);
+    }
+    await deliver(items, true);
+  }
+  return out;
+
+  /** Format and send (or log) alerts. Returns "budget" when the message budget ran out. */
+  async function deliver(
+    items: { id: string; userId: string; trade: StoredTrade }[],
+    retry: boolean,
+  ): Promise<"ok" | "budget"> {
+    for (const a of items) {
+      const t = a.trade;
+      const leader = t.wallet;
+      const f = (byLeader.get(leader) ?? []).find((x) => x.userId === a.userId);
+      if (!f) {
+        await store.setAlertStatus(a.id, "skipped", null); // unfollowed or alerts turned off since
+        continue;
+      }
+      const [stats, markets] = await Promise.all([store.getTraderStats(leader), store.getMarkets([t.marketId])]);
+      const m = markets[0];
       const text = formatAlert({
         appOrigin: deps.appOrigin,
         tradeId: t.id,
@@ -357,13 +440,14 @@ export async function runAlerts(deps: AlertDeps): Promise<AlertSummary> {
         await store.setAlertStatus(a.id, "skipped", null); // user hasn't linked Telegram
         out.skipped++;
       } else if (out.sent + out.failed >= budget.messages) {
-        out.stoppedEarly.push("message_budget"); // stays pending
-        break;
+        out.stoppedEarly.push("message_budget"); // stays pending; retried by a later run
+        return "budget";
       } else {
         try {
           await deps.send(f.chatId, text);
           await store.setAlertStatus(a.id, "sent", nowSec);
           out.sent++;
+          if (retry) out.retried++;
         } catch (err) {
           log(`telegram send failed: ${err instanceof Error ? err.message : "error"}`);
           await store.setAlertStatus(a.id, "failed", null);
@@ -371,6 +455,6 @@ export async function runAlerts(deps: AlertDeps): Promise<AlertSummary> {
         }
       }
     }
+    return "ok";
   }
-  return out;
 }

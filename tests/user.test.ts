@@ -25,7 +25,9 @@ describe("POST/DELETE /api/follow", () => {
   it("requires Origin == APP_URL, even with a valid session", async () => {
     const u = await signedInUser();
     for (const origin of ["https://evil.example", "http://localhost:3001", null]) {
-      const res = await followRoute(apiRequest("POST", "/api/follow", { body: { wallet: leader }, cookie: u.cookie, origin }));
+      const res = await followRoute(
+        apiRequest("POST", "/api/follow", { body: { wallet: leader }, cookie: u.cookie, origin }),
+      );
       expect(res.status).toBe(403);
     }
     expect(await getDataStore().listFollows(u.userId)).toEqual([]);
@@ -36,7 +38,9 @@ describe("POST/DELETE /api/follow", () => {
     const res = await followRoute(apiRequest("POST", "/api/follow", { body: { wallet: leader }, cookie: u.cookie }));
     expect(res.status).toBe(200);
     expect((await getDataStore().listFollows(u.userId)).map((f) => f.wallet)).toEqual([leader]);
-    const del = await unfollowRoute(apiRequest("DELETE", "/api/follow", { body: { wallet: leader }, cookie: u.cookie }));
+    const del = await unfollowRoute(
+      apiRequest("DELETE", "/api/follow", { body: { wallet: leader }, cookie: u.cookie }),
+    );
     expect(del.status).toBe(200);
     expect(await getDataStore().listFollows(u.userId)).toEqual([]);
   });
@@ -59,7 +63,13 @@ describe("GET/PUT /api/settings", () => {
     expect((await getSettingsRoute(apiRequest("GET", "/api/settings"))).status).toBe(401);
     const u = await signedInUser();
     const res = await getSettingsRoute(apiRequest("GET", "/api/settings", { cookie: u.cookie }));
-    expect(await res.json()).toEqual({ maxStakeUsdc: "5.00", slippageBps: 200, alertsEnabled: true, telegramLinked: false });
+    expect(await res.json()).toEqual({
+      maxStakeUsdc: "5.00",
+      slippageBps: 200,
+      alertsEnabled: true,
+      telegramLinked: false,
+      telegramUnlinkedAt: null,
+    });
   });
 
   it("saves valid settings", async () => {
@@ -72,10 +82,14 @@ describe("GET/PUT /api/settings", () => {
   it("rejects slippage above 500 bps (5%) even if the client sends it", async () => {
     const u = await signedInUser();
     for (const slippageBps of [501, 1000, 5000, -1, 2.5]) {
-      const res = await putSettingsRoute(apiRequest("PUT", "/api/settings", { body: { ...valid, slippageBps }, cookie: u.cookie }));
+      const res = await putSettingsRoute(
+        apiRequest("PUT", "/api/settings", { body: { ...valid, slippageBps }, cookie: u.cookie }),
+      );
       expect(res.status, String(slippageBps)).toBe(400);
     }
-    const res = await putSettingsRoute(apiRequest("PUT", "/api/settings", { body: { ...valid, slippageBps: 500 }, cookie: u.cookie }));
+    const res = await putSettingsRoute(
+      apiRequest("PUT", "/api/settings", { body: { ...valid, slippageBps: 500 }, cookie: u.cookie }),
+    );
     expect(res.status).toBe(200);
     const after = await (await getSettingsRoute(apiRequest("GET", "/api/settings", { cookie: u.cookie }))).json();
     expect(after.slippageBps).toBe(500);

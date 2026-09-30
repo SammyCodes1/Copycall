@@ -34,7 +34,9 @@ function toLeaderRow(s: StoredStats, rank: number): LeaderRow {
 }
 
 /** Ranked leaderboard: only wallets with >= MIN_RESOLVED_CALLS resolved positions. */
-export async function getLeaderboard(limit = 50): Promise<{ rows: LeaderRow[]; minResolved: number; updatedAt: number | null }> {
+export async function getLeaderboard(
+  limit = 50,
+): Promise<{ rows: LeaderRow[]; minResolved: number; updatedAt: number | null }> {
   await ensureMockData();
   const store = getDataStore();
   const minResolved = getMinResolvedCalls();
@@ -79,11 +81,8 @@ export async function getTraderProfile(wallet: string): Promise<TraderProfile | 
   const ids = [...new Set([...trades.map((t) => t.marketId), ...open.map((p) => p.marketId)])];
   const markets = new Map((await store.getMarkets(ids)).map((m) => [m.id, m]));
 
-  let rank = 0;
-  if (stats && stats.resolvedCalls >= minResolved) {
-    const board = await store.leaderboard(minResolved, 1000);
-    rank = board.findIndex((s) => s.wallet === wallet) + 1;
-  }
+  // Rank computed in the store (one indexed count in SQL), not by loading the board (audit B2-07).
+  const rank = stats && stats.resolvedCalls >= minResolved ? ((await store.traderRank(wallet, minResolved)) ?? 0) : 0;
 
   const recent: ProfileTrade[] = trades.map((t) => ({
     id: t.id,

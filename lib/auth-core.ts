@@ -54,7 +54,7 @@ function hashKey(value: string): string {
 }
 
 /** Best-effort client IP (Vercel sets x-forwarded-for). Hashed before storage. */
-export function clientIpKey(request: Request): string {
+export function clientIpKey(request: Request | { headers: Pick<Headers, "get"> }): string {
   const xff = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
   const ip = xff || request.headers.get("x-real-ip")?.trim() || "unknown";
   return hashKey(ip);
@@ -186,7 +186,11 @@ export async function resolveSession(
  * live session, bumps the user's session_version so this token (and any copy
  * of it) is rejected from now on. The route always clears the cookie.
  */
-export async function logout(deps: AuthDeps, request: Request, token: string | undefined): Promise<{ revoked: boolean }> {
+export async function logout(
+  deps: AuthDeps,
+  request: Request,
+  token: string | undefined,
+): Promise<{ revoked: boolean }> {
   assertSameOrigin(request, deps.appOrigin);
   const session = await resolveSession(deps, token);
   if (!session) return { revoked: false };

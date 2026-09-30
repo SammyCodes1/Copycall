@@ -54,5 +54,10 @@ const origin = new URL(appUrl);
 if (origin.protocol !== "https:") fail("APP_URL must be https (Telegram only calls https webhooks)");
 
 const url = `${origin.origin}/api/telegram/webhook`;
-await call("setWebhook", { url, secret_token: secret, allowed_updates: ["message"], drop_pending_updates: true });
-console.log(`Webhook set to ${url} (secret token configured, updates: message).`);
+await call("setWebhook", {
+  url,
+  secret_token: secret,
+  allowed_updates: ["message", "callback_query"],
+  drop_pending_updates: true,
+});
+console.log(`Webhook set to ${url} (secret token configured, updates: message, callback_query).`);

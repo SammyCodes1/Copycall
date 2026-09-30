@@ -143,6 +143,26 @@ Mock mode runs the same flow against a synthetic in-memory chain (`lib/mock/chai
 simulated server-side and labelled "Simulated signing" everywhere. Demo: sign in, follow a trader, run both
 crons (see Batch 2), open the copy link from the log, Review and sign, then visit `/positions` and claim.
 
+## Batch 2 audit fixes
+
+- **Telegram linking (B2-01):** `/start <code>` only shows the wallet the code belongs to and asks for an
+  inline-button confirmation; the chat is linked when the button is pressed. The account that loses the chat is
+  told in the chat and sees "Telegram unlinked" in settings; an account moving to a new chat notifies its old
+  chat. `scripts/telegram-set-webhook.mjs` now subscribes to `message` and `callback_query` (re-run it).
+- **Webhook (B2-05/06):** the route itself requires `TELEGRAM_WEBHOOK_SECRET` to be 32-256 chars of
+  `[A-Za-z0-9_-]` (otherwise every request is 401 and Telegram counts as not configured). After a valid secret
+  it always answers 200 and drops oversized or malformed updates.
+- **Follow cap (B2-03):** `follow_capped()` checks and inserts under a row lock on the user.
+- **Sync (B2-04):** a non-429 error only affects its own market tape or wallet, which backs off
+  (`sync_failures`, 10 min doubling to 24 h). Only 429 stops a phase. The summary reports `failed` counts.
+- **Titles (B2-02/08/09):** NFKC, all `Cf` characters stripped, dot look-alikes mapped, every dot between
+  alphanumerics defanged (plain decimals like 3.50 excepted), bare IPs, `/commands`, `#tags` and `@mentions`
+  neutralised, then truncated to 120.
+- **Public reads (B2-07):** trader rank comes from `trader_rank()` in SQL; `/api/leaderboard`, `/api/trader/*` and
+  `/trader/*` are limited to 60 requests per minute per IP (429 with `Retry-After`).
+- **Timeouts and retries (B2-11):** Telegram API calls time out after 10 s and RPC calls after 15 s. Failed or
+  stale-pending alerts are retried up to 3 attempts, 2+ minutes apart, while under 30 minutes old.
+
 ## Real mode setup (Supabase)
 
 1. Create a Supabase project. Apply the SQL in `supabase/migrations/` in order

@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { getAuthStore } from "@/lib/auth";
 import { isMockMode } from "@/lib/env";
+import { allowPublicRead, rateLimitedResponse } from "@/lib/public-limit";
 import { getLeaderboard } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
@@ -8,6 +10,7 @@ const QuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(100).de
 
 /** GET /api/leaderboard?limit= - public; ranked wallets (>= MIN_RESOLVED_CALLS) from trader_stats. */
 export async function GET(request: Request) {
+  if (!(await allowPublicRead(getAuthStore(), request, "leaderboard"))) return rateLimitedResponse();
   const q = QuerySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
   if (!q.success) return Response.json({ code: "INVALID_REQUEST", message: "limit must be 1-100" }, { status: 400 });
   try {

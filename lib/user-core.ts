@@ -56,12 +56,11 @@ export async function followTrader(deps: UserDeps, request: Request) {
   const wallet = await parseFollow(request);
   if (wallet === session.w) throw new AuthError(400, "SELF_FOLLOW", "You can't follow your own wallet");
   // Only wallets we track can be followed (keeps the alerts job bounded to real traders).
-  if (!(await deps.data.getTraderStats(wallet))) throw new AuthError(404, "TRADER_NOT_FOUND", "We don't track this wallet yet");
-  const current = await deps.data.listFollows(session.uid);
-  if (!current.some((f) => f.wallet === wallet) && current.length >= MAX_FOLLOWS) {
-    throw new AuthError(400, "FOLLOW_LIMIT", `You can follow up to ${MAX_FOLLOWS} traders`);
-  }
-  await deps.data.follow(session.uid, wallet);
+  if (!(await deps.data.getTraderStats(wallet)))
+    throw new AuthError(404, "TRADER_NOT_FOUND", "We don't track this wallet yet");
+  // The cap is enforced inside the store in one atomic step (B2-03), not check-then-act here.
+  const r = await deps.data.follow(session.uid, wallet, MAX_FOLLOWS);
+  if (r === "limit") throw new AuthError(400, "FOLLOW_LIMIT", `You can follow up to ${MAX_FOLLOWS} traders`);
   return { wallet, following: true };
 }
 
