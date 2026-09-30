@@ -637,7 +637,11 @@ function positionStatus(p: PositionsResponse["positions"][number]): PositionView
 
 /** GET /api/positions: the SESSION wallet's positions only (no wallet parameter exists). */
 export async function myPositions(d: FlowDeps, request: Request): Promise<PositionsView> {
-  const session = await requireSession(d, request);
+  return positionsForSession(d, await requireSession(d, request));
+}
+
+/** Same, for a server component that already resolved the session (the /positions page). */
+export async function positionsForSession(d: FlowDeps, session: { uid: string; w: string }): Promise<PositionsView> {
   await rateLimit(d, "positions", session.uid, POSITIONS_RATE_LIMIT);
   const now = nowSec(d);
   const key = `positions:${session.w}`;
