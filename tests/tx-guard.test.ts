@@ -26,6 +26,7 @@ import {
   simulateAndCheck,
   type GuardContext,
 } from "@/lib/tx-guard";
+import { copyUsdcLimitBase } from "@/lib/copy-math";
 import marketsJson from "@/fixtures/markets.json";
 import { testWallet } from "./helpers/wallet";
 
@@ -38,6 +39,7 @@ const randomKey = () => bs58.encode(randomBytes(32));
 let wallet: string;
 let build: BuildResponse;
 let ctx: GuardContext;
+let feeBase: bigint;
 
 beforeAll(async () => {
   wallet = testWallet().address;
@@ -48,8 +50,9 @@ beforeAll(async () => {
     feePayer: wallet,
     marketId: primaryMarket,
     pantaProgramIds: PROGRAMS,
-    maxUsdcOutBase: usdcToBase("5.00") + usdcToBase(q.feeUsdc),
+    maxUsdcOutBase: copyUsdcLimitBase(usdcToBase("5.00")), // hard total: the fee is inside the 5.00
   };
+  feeBase = usdcToBase(q.feeUsdc);
 });
 
 const tokenIx = (program: string, data: number[], accounts: string[]): PantaInstruction => ({
@@ -181,7 +184,32 @@ describe("simulation checks", () => {
     expect(r.accountsChecked).toBeGreaterThanOrEqual(2);
   });
 
-  it("reject when simulation spends more than max stake + quoted fee (static checks can't see it)", async () => {
+  it("the limit is the max stake itself: fee and slippage get no headroom on top", () => {
+    expect(ctx.maxUsdcOutBase).toBe(usdcToBase("5.00"));
+    expect(feeBase).toBeGreaterThan(0n);
+  });
+
+  it("reject a build that pulls the stake PLUS the fee (5.00 approved, 5.10 out)", async () => {
+    const ixs = structuredClone(build.instructions);
+    const data = Buffer.from(ixs[3].data, "base64");
+    data.writeBigUInt64LE(usdcToBase("5.00") + feeBase, 8); // fee added on top of the stake
+    ixs[3].data = data.toString("base64");
+    const tx = assembleTransaction(ixs, build.recentBlockhash, wallet);
+    await expect(simulateAndCheck(chain, tx, wallet, ctx.maxUsdcOutBase)).rejects.toMatchObject({ code: "OVER_STAKE" });
+    // One base unit over is already too much.
+    data.writeBigUInt64LE(usdcToBase("5.00") + 1n, 8);
+    ixs[3].data = data.toString("base64");
+    const tx2 = assembleTransaction(ixs, build.recentBlockhash, wallet);
+    await expect(simulateAndCheck(chain, tx2, wallet, ctx.maxUsdcOutBase)).rejects.toMatchObject({ code: "OVER_STAKE" });
+  });
+
+  it("reject a top-level transfer of stake + fee", () => {
+    const ata = associatedTokenAddress(wallet);
+    const ix = (n: bigint) => tokenIx(TOKEN_PROGRAM_ID, [3, ...u64(n)], [ata, mockVault(primaryMarket), wallet]);
+    expect(reject([...build.instructions, ix(usdcToBase("5.00") + feeBase)])).toBe("OVER_STAKE");
+  });
+
+  it("reject when simulation spends more than the max stake (static checks can't see it)", async () => {
     const ixs = structuredClone(build.instructions);
     const data = Buffer.from(ixs[3].data, "base64");
     data.writeBigUInt64LE(ctx.maxUsdcOutBase + 1n, 8); // the program would pull more than quoted

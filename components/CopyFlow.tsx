@@ -6,7 +6,8 @@
  */
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CopyReview, type CopyReviewData } from "./CopyReview";
+import { totalWithFeeText } from "@/lib/copy-math";
+import { CopyReview, reviewAmounts, type CopyReviewData } from "./CopyReview";
 import { shortAddr } from "./format";
 import { FlowError, api, useTxSigner, type Built, type Confirmed } from "./tx-client";
 import { Tag } from "./ui/Badge";
@@ -19,6 +20,7 @@ type Quote = {
   shares: string;
   avgPrice: string;
   feeUsdc: string;
+  maxUsdcOut: string; // the guard's limit: the max stake, fee included
   slippageBps: number;
   validUntil: number;
 };
@@ -81,8 +83,8 @@ function Checks({ built }: { built: Built }) {
           Programs: <span className="text-fg">{c.programs.join(", ")}</span>, all allowlisted
         </Check>
         <Check ok>
-          Simulated: <span className="num text-fg">{c.usdcOut} USDC</span> leaves your wallet (limit{" "}
-          <span className="num">{c.maxUsdcOut}</span>)
+          Simulated: <span className="num text-fg">{c.usdcOut} USDC</span> leaves your wallet, fee included (limit{" "}
+          <span className="num">{c.maxUsdcOut}</span>, your max stake)
         </Check>
         <Check ok>No approvals, no authority changes; your other token accounts are unchanged</Check>
       </ul>
@@ -160,6 +162,9 @@ export function CopyFlow({ tradeId, base, nowSec, mock, sessionWallet, closed }:
     slippageBps: quote?.slippageBps ?? null,
   };
 
+  const amounts = reviewAmounts(data);
+  const totalText = amounts ? totalWithFeeText(amounts.total, amounts.fee) : null;
+
   const badge =
     phase.k === "done" ? (
       <Tag tone="yes">Copied</Tag>
@@ -203,11 +208,12 @@ export function CopyFlow({ tradeId, base, nowSec, mock, sessionWallet, closed }:
         return (
           <>
             <p className="mb-3 text-sm leading-6 text-fg-muted">
-              Next, Copycall builds this exact order and checks it. Then your wallet asks you to approve paying at most{" "}
-              <span className="num text-fg">{quote?.amountUsdc} USDC</span> plus the fee. Copycall never holds your
+              Next, Copycall builds this exact order and checks it. Then your wallet asks you to approve{" "}
+              <span className="num text-fg">{totalText}</span>. Any transaction that would move more than{" "}
+              <span className="num text-fg">{quote?.maxUsdcOut} USDC</span> is refused. Copycall never holds your
               funds.
             </p>
-            <Button size="lg" className="w-full" onClick={reviewAndSign}>
+            <Button size="lg" className="w-full" onClick={reviewAndSign} disabled={!amounts}>
               Review and sign
             </Button>
             <p className="mt-2 text-center text-xs text-fg-subtle">
@@ -240,7 +246,7 @@ export function CopyFlow({ tradeId, base, nowSec, mock, sessionWallet, closed }:
               <p className="text-base font-semibold text-fg">Copy recorded</p>
               <p className="mt-1 text-sm leading-6 text-fg-muted">
                 You bought {base.side === "yes" ? "YES" : "NO"} for{" "}
-                <span className="num text-fg">{quote?.amountUsdc} USDC</span>. Confirmed on{" "}
+                <span className="num text-fg">{totalText}</span>. Confirmed on{" "}
                 {phase.result.simulated ? "the mock chain" : "Solana"}
                 {phase.result.reported ? " and reported to Panta." : ". Panta attribution will be retried."}
               </p>

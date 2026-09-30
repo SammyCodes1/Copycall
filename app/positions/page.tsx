@@ -5,6 +5,7 @@ import { WalletButton } from "@/components/WalletButton";
 import { ago, shortAddr } from "@/components/format";
 import { SideTag, Tag } from "@/components/ui/Badge";
 import { getSession } from "@/lib/auth";
+import { totalWithFeeShort } from "@/lib/copy-math";
 import { positionsForSession, type PositionView, type PositionsView } from "@/lib/copy-core";
 import { ensureMockData } from "@/lib/data";
 import { isMockMode } from "@/lib/env";
@@ -133,7 +134,9 @@ export default async function PositionsPage() {
                     <p className="break-words text-sm font-semibold text-fg">{c.title}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-fg-muted">
                       <SideTag side={c.side === "YES" ? "yes" : "no"} />
-                      <span className="num">{c.amountUsdc} USDC</span>
+                      <span className="num">
+                        {totalWithFeeShort(c.amountUsdc, c.feeUsdc)}
+                      </span>
                       <span className="num">{c.shares} sh</span>
                       <span className="num text-fg-subtle">{ago(c.createdAt, nowSec)} ago</span>
                       <span className="num text-xs text-fg-subtle" title={c.signature}>

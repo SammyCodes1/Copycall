@@ -150,7 +150,7 @@ export const supabaseCopyStore: CopyStore = {
   async listCopies(userId, limit) {
     const { data, error } = await getDb()
       .from("copies")
-      .select("id, leader_trade_id, market_id, side, amount_usdc, shares, signature, status, created_at")
+      .select("id, leader_trade_id, market_id, side, amount_usdc, fee_usdc, shares, signature, status, created_at")
       .eq("user_id", userId)
       .in("status", ["confirmed", "reported"])
       .order("created_at", { ascending: false })
@@ -162,6 +162,7 @@ export const supabaseCopyStore: CopyStore = {
       marketId: r.market_id,
       side: r.side,
       amountUsdc: dec(r.amount_usdc, 2),
+      feeUsdc: r.fee_usdc === null || r.fee_usdc === undefined ? null : dec(r.fee_usdc, 2),
       shares: dec(r.shares ?? 0, 2),
       signature: r.signature,
       status: r.status,

@@ -73,7 +73,10 @@ export type GuardContext = {
   feePayer: string; // the session wallet
   marketId: string; // from OUR stored trade / the claim request, never from the build response
   pantaProgramIds: ReadonlySet<string>;
-  /** Most USDC (base units) the user may send via top-level token transfers. 0 for claims. */
+  /**
+   * Most USDC (base units) the user may send via top-level token transfers.
+   * Copies: the approved max stake, fee included (lib/copy-math.ts). 0 for claims.
+   */
   maxUsdcOutBase: bigint;
 };
 
@@ -285,7 +288,8 @@ export type SimulationCheck = {
 /**
  * Simulate the exact transaction and require (addendum A):
  *  - success
- *  - the user's USDC decrease <= maxUsdcDecreaseBase (max stake + quoted fee; 0 for claims)
+ *  - the user's USDC decrease <= maxUsdcDecreaseBase (copies: the max stake, which is the
+ *    hard total with the Panta fee and any slippage inside it; claims: 0)
  *  - the USDC account keeps its owner, delegate and close authority (only the amount may change)
  *  - no other user-owned token account changes at all
  *  - SOL spent stays under MAX_SOL_SPEND_LAMPORTS

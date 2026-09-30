@@ -16,7 +16,9 @@ import { buildClaimTx, buildCopy, confirmOrder, myPositions, quoteCopy, type Flo
 import { ensureMockData, getDataStore, getUserDeps } from "@/lib/data";
 import { MOCK_PROGRAM_ID, getSharedMockChain } from "@/lib/mock/chain-mock";
 import { createCopyMemoryState, createMemoryCopyStore, type CopyMemoryState } from "@/lib/mock/copy-store-memory";
+import { copyAmounts, totalWithFeeShort } from "@/lib/copy-math";
 import * as panta from "@/lib/panta";
+import { baseToUsdc, usdcToBase } from "@/lib/solana-constants";
 import type { StoredTrade } from "@/lib/data-store";
 import { apiRequest, signedInUser } from "./helpers/session";
 
@@ -222,6 +224,91 @@ describe("build: server-assembled, validated, simulated", () => {
     const q = await quoteCopy(d, get("/q", u), trade.id);
     expect(await code(buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id))).toBe("TX_REJECTED");
     expect(state.orders.size).toBe(0);
+  });
+});
+
+describe("fee model: the max stake is the hard total, fee included", () => {
+  it("the quote says so: limit == stake, fee inside it, estimate from stake - fee", async () => {
+    const u = await signedInUser();
+    const q = await quoteCopy(deps(), get("/q", u), trade.id);
+    expect(q.amountUsdc).toBe("5.00");
+    expect(q.maxUsdcOut).toBe("5.00");
+    const a = copyAmounts(q);
+    expect(a.feeBase).toBeGreaterThan(0n);
+    expect(a.feeBase + a.toSharesBase).toBe(usdcToBase(q.maxUsdcOut));
+    // Mock Panta prices (stake - fee) / avgPrice and rounds; we round down, so at most 0.01 below.
+    expect(usdcToBase(q.shares) - usdcToBase(a.estShares)).toBeGreaterThanOrEqual(0n);
+    expect(usdcToBase(q.shares) - usdcToBase(a.estShares)).toBeLessThanOrEqual(10_000n);
+  });
+
+  it("build: the guard limit is 5.00, not 5.00 + fee, and the simulated total fits it", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const { q, b } = await quoteAndBuild(d, u);
+    expect(b.checks.maxUsdcOut).toBe("5.00");
+    expect(b.checks.maxUsdcOut).not.toBe(baseToUsdc(usdcToBase("5.00") + usdcToBase(q.feeUsdc)));
+    expect(usdcToBase(b.checks.usdcOut)).toBeLessThanOrEqual(usdcToBase(b.checks.maxUsdcOut));
+    expect(state.orders.get(b.orderId)).toMatchObject({ amountUsdc: "5.00", feeUsdc: q.feeUsdc });
+  });
+
+  it("rejects a Panta build that pulls the fee on top of the stake (5.10 out for 5.00 approved)", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({
+      state,
+      panta: {
+        ...deps().panta,
+        buildPrimaryOrder: async (req) => {
+          const b = await panta.buildPrimaryOrder(req);
+          const ixs = structuredClone(b.instructions);
+          const i = ixs.length - 1; // primary_order_usdc
+          const data = Buffer.from(ixs[i].data, "base64");
+          data.writeBigUInt64LE(usdcToBase(b.amountUsdc) + usdcToBase(b.feeUsdc), 8);
+          ixs[i].data = data.toString("base64");
+          return { ...b, instructions: ixs };
+        },
+      },
+    });
+    const q = await quoteCopy(d, get("/q", u), trade.id);
+    expect(await code(buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id))).toBe("TX_REJECTED");
+    expect(state.orders.size).toBe(0);
+  });
+
+  it("rejects a build whose fee differs from the quoted one", async () => {
+    const u = await signedInUser();
+    const d = deps({
+      panta: {
+        ...deps().panta,
+        buildPrimaryOrder: async (req) => ({ ...(await panta.buildPrimaryOrder(req)), feeUsdc: "0.50" }),
+      },
+    });
+    const q = await quoteCopy(d, get("/q", u), trade.id);
+    expect(await code(buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id))).toBe("TX_REJECTED");
+  });
+
+  it("refuses a quote whose fee isn't smaller than the stake", async () => {
+    const u = await signedInUser();
+    const d = deps({
+      panta: {
+        ...deps().panta,
+        quotePrimaryOrder: async (req) => ({ ...(await panta.quotePrimaryOrder(req)), feeUsdc: "5.00" }),
+      },
+    });
+    expect(await code(quoteCopy(d, get("/q", u), trade.id))).toBe("PANTA_ERROR");
+  });
+
+  it("positions list the copy as a total with its fee", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const { q, b } = await quoteAndBuild(d, u);
+    await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u), "copy");
+    const view = await myPositions(d, get("/p", u));
+    expect(view.copies[0]).toMatchObject({ amountUsdc: "5.00", feeUsdc: q.feeUsdc });
+    expect(totalWithFeeShort(view.copies[0].amountUsdc, view.copies[0].feeUsdc)).toBe(
+      `5.00 USDC total (${q.feeUsdc} fee)`,
+    );
   });
 });
 

@@ -129,9 +129,14 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    10/min per user.
 2. `POST /api/copy/[tradeId]/build` `{quoteToken}`: Panta build, then `lib/tx-guard.ts` checks the instructions
    (program allowlist, you are the only signer and fee payer, one Panta instruction for this market, no
-   approvals / authority changes / closes, compute-budget and priority-fee caps, USDC out ≤ stake + quoted
-   fee), assembles the v0 transaction, and simulates it (USDC decrease ≤ limit, other token accounts
-   unchanged, SOL spend ≤ 0.02). The exact bytes are stored as a pending order (90 s).
+   approvals / authority changes / closes, compute-budget and priority-fee caps, USDC out ≤ max stake), assembles
+   the v0 transaction, and simulates it (USDC decrease ≤ max stake, other token accounts unchanged, SOL spend ≤ 0.02).
+   The fee must match the quote. The exact bytes are stored as a pending order (90 s).
+   **Fee model:** the max stake is the hard total, fee included. We quote Panta with `amountUsdc` = max stake;
+   the quoted `feeUsdc` comes out of it, so (stake − fee) buys shares and the estimate is
+   (stake − fee) / `avgPrice` (never above Panta's `shares`). Slippage costs shares, never extra USDC: the review
+   shows the minimum shares at the cap. The guard's limit is the max stake itself, with no fee or slippage
+   headroom (5.00 approved = 5.00 limit). Shared math: `lib/copy-math.ts`.
 3. The wallet signs those exact bytes. `POST /api/copy/confirm` `{orderId, signedTransaction}`: the message
    hash must match, the signature must verify for the session wallet and be unused. The server broadcasts,
    waits for confirmation, re-checks the landed transaction, records the copy atomically

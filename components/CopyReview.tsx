@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { copyAmounts, type CopyAmounts } from "@/lib/copy-math";
 import { CreatorFlag } from "./CreatorFlag";
 import { ago, shortAddr } from "./format";
 import { HitRate, SideTag, Tag } from "./ui/Badge";
@@ -14,7 +15,7 @@ export type CopyReviewData = {
   leaderShares: string;
   leaderTime: number | null;
   isCreatorTrade: boolean;
-  stakeUsdc: string | null;
+  stakeUsdc: string | null; // the max stake = the hard total, fee included
   avgPrice: string | null;
   shares: string | null;
   feeUsdc: string | null;
@@ -55,7 +56,24 @@ function Row({ k, v, strong, hint }: { k: string; v: string | null; strong?: boo
   );
 }
 
-const usdc = (v: string | null) => (v === null ? null : `${v} USDC`);
+const usdc = (v: string | null | undefined) => (v === null || v === undefined ? null : `${v} USDC`);
+
+/** The same breakdown the server checks (lib/copy-math.ts); null while loading or if the quote doesn't fit. */
+export function reviewAmounts(c: CopyReviewData): CopyAmounts | null {
+  if (c.stakeUsdc === null || c.feeUsdc === null || c.avgPrice === null || c.shares === null || c.slippageBps === null)
+    return null;
+  try {
+    return copyAmounts({
+      amountUsdc: c.stakeUsdc,
+      feeUsdc: c.feeUsdc,
+      avgPrice: c.avgPrice,
+      shares: c.shares,
+      slippageBps: c.slippageBps,
+    });
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The review-and-sign card. The landing page shows it as a labelled Sample
@@ -75,7 +93,7 @@ export function CopyReview({
   badge?: ReactNode;
   action?: ReactNode;
 }) {
-  const pct = c.slippageBps === null ? null : `${(c.slippageBps / 100).toFixed(2)}%`;
+  const a = reviewAmounts(c);
   return (
     <article
       aria-label="Copy review"
@@ -121,11 +139,13 @@ export function CopyReview({
           <Marker n="2" />
           <p className="label text-fg-subtle">Your copy · re-quoted now</p>
           <dl className="mt-1 divide-y divide-line">
-            <Row k="You pay" hint="your max stake" v={usdc(c.stakeUsdc)} strong />
+            <Row k="You pay in total" hint="your max stake, fee included" v={usdc(a?.total)} strong />
+            <Row k="Fee" hint="taken out of the total" v={usdc(a?.fee)} />
+            <Row k="Buys shares" hint="total minus fee" v={usdc(a?.toShares)} />
             <Row k="Your price" hint="average, from the quote" v={c.avgPrice} />
-            <Row k="Est. shares" v={c.shares} />
-            <Row k="Fee" v={usdc(c.feeUsdc)} />
-            <Row k="Slippage cap" v={pct} />
+            <Row k="Est. shares" hint={a ? `${a.toShares} ÷ price` : undefined} v={a?.estShares ?? null} />
+            <Row k="Slippage cap" hint="costs shares, never extra USDC" v={a?.slippagePct ?? null} />
+            <Row k="Min. shares" hint="if the price moves the full cap" v={a?.minShares ?? null} />
           </dl>
           <p className="mt-3 rounded-[var(--radius-control)] border border-line bg-white/[0.02] px-3 py-2 text-xs leading-5 text-fg-muted">
             Followers usually buy at a worse price than the leader on the bonding curve. Side and market come from the

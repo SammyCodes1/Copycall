@@ -6,6 +6,8 @@
  *    from the stored leader trade; the amount and slippage come from the
  *    follower's saved settings. Nothing in the URL, query or body can change them.
  *  - Slippage is capped at 500 bps here even though Panta allows 5000.
+ *  - The max stake is the hard total, fee included: the guard's USDC limit is
+ *    the max stake itself (no fee or slippage headroom on top). See lib/copy-math.ts.
  *  - We assemble the transaction ourselves (fee payer = session wallet), check
  *    it against the allowlist, simulate it, store the hash of the exact message
  *    and hand the wallet those exact bytes.
@@ -48,6 +50,7 @@ import {
   baseToUsdc,
   usdcToBase,
 } from "./solana-constants";
+import { copyAmounts, copyUsdcLimitBase } from "./copy-math";
 import { safeTitle } from "./text";
 import type { TradeSide } from "./trades";
 import {
@@ -162,7 +165,9 @@ export type QuoteView = {
   amountUsdc: string;
   shares: string;
   avgPrice: string;
-  feeUsdc: string;
+  feeUsdc: string; // taken out of amountUsdc, not added on top
+  /** The most USDC the transaction may move, fee included (= the max stake). The guard enforces it. */
+  maxUsdcOut: string;
   slippageBps: number;
   validUntil: number; // unix sec: build must happen before this
 };
@@ -232,6 +237,12 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
   ) {
     throw new AuthError(502, "PANTA_ERROR", "Panta returned a quote for a different order");
   }
+  // The fee comes out of the stake (lib/copy-math.ts). A quote that can't fit that model is refused.
+  try {
+    copyAmounts({ ...q, amountUsdc: settings.maxStakeUsdc, slippageBps: settings.slippageBps });
+  } catch {
+    throw new AuthError(502, "PANTA_ERROR", "Panta returned a quote we can't show honestly. Try again.");
+  }
 
   const pantaExpiry = Math.floor(Date.parse(q.expiresAt) / 1000);
   const validUntil = Math.min(
@@ -250,6 +261,7 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
     shares: q.shares,
     avgPrice: q.avgPrice,
     feeUsdc: q.feeUsdc,
+    maxUsdcOut: baseToUsdc(copyUsdcLimitBase(usdcToBase(settings.maxStakeUsdc))),
     slippageBps: settings.slippageBps,
     validUntil,
   };
@@ -407,11 +419,13 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
     b.marketId !== trade.marketId ||
     fromApiSide(b.side) !== trade.side ||
     usdcToBase(b.amountUsdc) !== stake ||
+    usdcToBase(b.feeUsdc) !== usdcToBase(tok.quote.feeUsdc) ||
     b.quoteId !== tok.quote.quoteId
   ) {
     throw rejected("Panta built a different order than the one quoted");
   }
-  const maxOut = stake + usdcToBase(tok.quote.feeUsdc); // addendum A: max stake + quoted fee
+  // Hard total: the fee and any slippage come out of the stake, never on top of it.
+  const maxOut = copyUsdcLimitBase(stake);
   const built = await assembleAndStore(d, {
     kind: "copy",
     uid: session.uid,
@@ -619,7 +633,8 @@ export type PositionsView = {
     tradeId: string;
     title: string;
     side: TradeSide;
-    amountUsdc: string;
+    amountUsdc: string; // total, fee included
+    feeUsdc: string | null;
     shares: string;
     signature: string;
     createdAt: number;
@@ -685,6 +700,7 @@ export async function positionsForSession(d: FlowDeps, session: { uid: string; w
       title: title(c.marketId),
       side: c.side,
       amountUsdc: c.amountUsdc,
+      feeUsdc: c.feeUsdc,
       shares: c.shares,
       signature: c.signature,
       createdAt: c.createdAt,

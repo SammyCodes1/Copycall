@@ -32,7 +32,8 @@ export function ClaimButton({
     try {
       const { data: built } = await api<Built & { winningShares: string }>("POST", "/api/claim/build", { marketId });
       const r = await sign(built, "/api/claim/confirm", (k) => setState({ k, built }));
-      setState({ k: "done", amount: built.winningShares, simulated: r.simulated });
+      // What the checked simulation says arrives (USDC out is negative for a claim), not the share count.
+      setState({ k: "done", amount: built.checks.usdcOut.replace(/^-/, ""), simulated: r.simulated });
       // Let the confirmation read for a moment, then re-render the row as "Claimed".
       setTimeout(() => router.refresh(), 3000);
     } catch (e) {
@@ -52,7 +53,7 @@ export function ClaimButton({
           : "Approve in wallet…"
         : state.k === "confirming"
           ? "Confirming…"
-          : `Claim ${shares} USDC`;
+          : `Claim ~${shares} USDC`; // about 1 USDC per winning share; the exact amount is checked before signing
 
   if (state.k === "done") {
     return (

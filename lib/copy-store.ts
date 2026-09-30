@@ -40,7 +40,8 @@ export type RecordedCopy = {
   leaderTradeId: string;
   marketId: string;
   side: TradeSide;
-  amountUsdc: string;
+  amountUsdc: string; // total that left the wallet, fee included
+  feeUsdc: string | null; // null for rows recorded before fee_usdc existed
   shares: string;
   signature: string;
   status: "confirmed" | "reported";
