@@ -187,6 +187,12 @@ export const rpcChain: Chain = {
     } catch {
       systemOps = null;
     }
+    let tokenOps: TokenAuthorityOp[] | null = null;
+    try {
+      tokenOps = tokenAuthorityOps(res.value.innerInstructions, tx.message.staticAccountKeys.map((k) => k.toBase58()));
+    } catch {
+      tokenOps = null;
+    }
     return {
       err: res.value.err ?? null,
       logs: res.value.logs ?? [],
@@ -198,6 +204,7 @@ export const rpcChain: Chain = {
       ),
       innerPrograms,
       innerSystemOps: systemOps,
+      tokenAuthorityOps: tokenOps,
     };
   },
 

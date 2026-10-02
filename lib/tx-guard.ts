@@ -644,6 +644,12 @@ export type SimulationResult = {
   innerPrograms: string[] | null;
   /** Inner System instructions (F-01). null = unknown, which fails closed. */
   innerSystemOps: InnerSystemOp[] | null;
+  /**
+   * H4-01 (pre-sign): inner Token / Token-2022 approve, approveChecked, setAuthority and
+   * closeAccount. The before/after account bytes miss an approve -> use -> revoke inside one
+   * transaction; the instructions don't. null = unknown, which fails closed.
+   */
+  tokenAuthorityOps: TokenAuthorityOp[] | null;
 };
 
 /** What the guard needs from chain (real RPC or the mock chain). */
@@ -733,6 +739,7 @@ export async function simulateAndCheck(
     throw new TxRejected("SIMULATION_ACCOUNTS", "Simulation returned the wrong accounts");
   checkInnerPrograms(sim.innerPrograms, pantaProgramIds); // B3-04
   checkInnerSystemOps(sim.innerSystemOps, wallet); // F-01: no Assign/Allocate/Create of the wallet
+  checkTokenAuthorityOps(sim.tokenAuthorityOps, usdcAta); // H4-01: no delegate/authority/close, even if undone later
 
   const walletAfter = sim.accounts[0];
   // F-01: the wallet stays System-owned, non-executable and data-less.

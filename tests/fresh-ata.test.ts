@@ -27,6 +27,7 @@ function chainWith(post: Buffer, owner = TOKEN_PROGRAM_ID): ChainReader {
       logs: [],
       innerPrograms: [TOKEN_PROGRAM_ID, SYSTEM_PROGRAM_ID],
       innerSystemOps: [],
+      tokenAuthorityOps: [],
       accounts: [
         { data: Buffer.alloc(0), lamports: 997_000_000, owner: SYSTEM_PROGRAM_ID, executable: false },
         { data: post, lamports: 2_039_280, owner, executable: false },

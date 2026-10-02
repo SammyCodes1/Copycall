@@ -1638,6 +1638,54 @@ describe("F-01: the wallet stays a plain System account (no Assign/Allocate, eve
     expect(r.log).toContain("WALLET_OWNER");
   });
 
+  it("H4-01 pre-sign: an approve / setAuthority / close of the user's USDC account in the simulation is refused even if undone later in the tx (bytes equal before/after)", async () => {
+    for (const type of ["approve", "approveChecked", "setAuthority", "closeAccount"]) {
+      const r = await buildWith(simWith((s, a) => ({ ...s, tokenAuthorityOps: [{ type, target: a[1] }] })));
+      expect(r).toMatchObject({ res: "TX_REJECTED", orders: 0 });
+      expect(r.log).toContain("USDC_AUTHORITY");
+    }
+    // Unreadable or missing token instructions fail closed; another account's approve is fine.
+    const unknown = await buildWith(simWith((s) => ({ ...s, tokenAuthorityOps: [{ type: "unknown", target: null }] })));
+    expect(unknown.log).toContain("TOKEN_UNKNOWN");
+    const none = await buildWith(simWith((s) => ({ ...s, tokenAuthorityOps: null })));
+    expect(none.log).toContain("INNER_UNAVAILABLE");
+    const other = await buildWith(simWith((s) => ({ ...s, tokenAuthorityOps: [{ type: "approve", target: Keypair.generate().publicKey.toBase58() }] })));
+    expect(other.res).toBe("OK");
+  });
+
+  it("H4-01 pre-sign: the real adapter's simulate decodes the inner token instructions (and null when unreadable)", async () => {
+    process.env.SOLANA_RPC_URL ??= "https://rpc.example/";
+    const { Connection } = await import("@solana/web3.js");
+    const { rpcChain } = await import("@/lib/solana");
+    const payer = Keypair.generate();
+    const ata = associatedTokenAddress(payer.publicKey.toBase58());
+    const msg = new TransactionMessage({
+      payerKey: payer.publicKey,
+      recentBlockhash: bs58.encode(Buffer.alloc(32, 5)),
+      instructions: [
+        new TransactionInstruction({
+          programId: new PublicKey(TOKEN_PROGRAM_ID),
+          keys: [{ pubkey: new PublicKey(ata), isSigner: false, isWritable: true }],
+          data: Buffer.from([4, 1, 0, 0, 0, 0, 0, 0, 0]),
+        }),
+      ],
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(msg);
+    const keys = msg.staticAccountKeys.map((k) => k.toBase58());
+    const approve = { programIdIndex: keys.indexOf(TOKEN_PROGRAM_ID), accounts: [keys.indexOf(ata)], data: bs58.encode(Buffer.from([4, 1, 0, 0, 0, 0, 0, 0, 0])) };
+    const spy = vi.spyOn(Connection.prototype, "simulateTransaction").mockResolvedValue({
+      context: { slot: 1 },
+      value: { err: null, logs: [], accounts: [], innerInstructions: [{ index: 0, instructions: [approve] }] },
+    } as never);
+    try {
+      expect((await rpcChain.simulate(tx, [])).tokenAuthorityOps).toEqual([{ type: "approve", target: ata }]);
+      spy.mockResolvedValueOnce({ context: { slot: 1 }, value: { err: null, logs: [], accounts: [], innerInstructions: [{ index: 0, instructions: [{ programIdIndex: 99 }] }] } } as never);
+      expect((await rpcChain.simulate(tx, [])).tokenAuthorityOps).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("simulation: unknown System ops, a missing System op list or a missing owner fail closed", async () => {
     const nonce = await buildWith(simWith((s) => ({ ...s, innerSystemOps: [{ type: "unknown", target: null }] })));
     expect(nonce.log).toContain("SYSTEM_CPI");

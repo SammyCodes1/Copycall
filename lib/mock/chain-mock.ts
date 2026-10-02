@@ -354,6 +354,7 @@ export function createMockChain(): MockChain {
           accounts: [],
           innerPrograms: inner,
           innerSystemOps: sysOps,
+          tokenAuthorityOps: [],
         };
       }
       return {
@@ -361,6 +362,7 @@ export function createMockChain(): MockChain {
         logs: ["Program log: mock simulation"],
         innerPrograms: inner,
         innerSystemOps: sysOps,
+        tokenAuthorityOps: [], // the mock programs never approve, re-authorize or close accounts
         accounts: addresses.map((a) => {
           const t = next.tokens.get(a);
           if (t)
