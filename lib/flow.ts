@@ -31,6 +31,16 @@ export function pantaProgramIds(): ReadonlySet<string> {
 }
 
 /** Pinned fee model + fee cap. Real mode fails closed (503) without PANTA_FEE_MODEL. */
+// E-09: getFlowDeps passes null instead, so only quote and build answer 503 (see feePin in copy-core).
+function feeConfigOrNull(): FeeConfig | null {
+  try {
+    return feeConfig();
+  } catch (err) {
+    if (err instanceof AuthError) return null;
+    throw err;
+  }
+}
+
 export function feeConfig(): FeeConfig {
   try {
     return feeConfigFromEnv(readEnv(), isMockMode());
@@ -58,8 +68,8 @@ export function getFlowDeps(): FlowDeps {
     chain: mock ? getSharedMockChain() : rpcChain,
     pantaProgramIds: pantaProgramIds(),
     ...(() => {
-      const f = feeConfig();
-      return { feeModel: f.model, feeCapBps: f.feeCapBps };
+      const f = feeConfigOrNull();
+      return { feeModel: f?.model ?? null, feeCapBps: f?.feeCapBps ?? null };
     })(),
     mock,
     log: (m) => console.info(`[copy] ${m}`),

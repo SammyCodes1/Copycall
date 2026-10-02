@@ -155,6 +155,34 @@ describe("quoteWithinStake (pinned model)", () => {
     await expect(quoteWithinStake(grow.quote, stake, PIN("on_top"))).rejects.toMatchObject({ code: "FEE_TOO_HIGH" });
   });
 
+  it("E-08: on top, a re-quote with a higher fee is refused even when it fits the stake", async () => {
+    // The auditor's case: 0.105 then 0.11. 4.89 + 0.11 = 5.00 fits the stake, but the fee went up.
+    const calls: string[] = [];
+    const fees = ["0.105", "0.11"];
+    const up = async (amountUsdc: string) => {
+      calls.push(amountUsdc);
+      return { amountUsdc, feeUsdc: fees[calls.length - 1], avgPrice: PRICE.toFixed(6), shares: (Number(amountUsdc) / PRICE).toFixed(2) };
+    };
+    await expect(quoteWithinStake(up, stake, PIN("on_top"))).rejects.toMatchObject({
+      code: "FEE_TOO_HIGH",
+      message: expect.stringContaining("went up"),
+    });
+    expect(calls).toEqual(["5.00", "4.89"]);
+    // An equal or lower re-quoted fee is fine.
+    let m = 0;
+    const down = fakePanta("on_top", { feeFn: () => [0.1, 0.09][m++] ?? 1 });
+    expect((await quoteWithinStake(down.quote, stake, PIN("on_top"))).feeBase).toBe(toMicro("0.09"));
+  });
+
+  it("E-08: on top, a no_fee re-quote is refused (it contradicts the pin)", async () => {
+    let n = 0;
+    const drop = fakePanta("on_top", { feeFn: () => [0.1, 0][n++] ?? 1 });
+    await expect(quoteWithinStake(drop.quote, stake, PIN("on_top"))).rejects.toMatchObject({
+      code: "FEE_MODEL_MISMATCH",
+      detected: "no_fee",
+    });
+  });
+
   it("refuses a quote for a different amount", async () => {
     const wrong = async () => ({ amountUsdc: "50.00", feeUsdc: "1.00", avgPrice: "0.300750", shares: "163.00" });
     await expect(quoteWithinStake(wrong, stake, PIN("inclusive"))).rejects.toBeInstanceOf(FeeModelError);
@@ -179,8 +207,10 @@ describe("fee config (PANTA_FEE_MODEL pin, PANTA_FEE_CAP_BPS)", () => {
     } catch (e) {
       expect(String(e)).not.toContain("guess-xyz");
     }
-    for (const v of ["0", "1001", "2.5", "abc"])
+    // E-07: Number() would accept these; only plain digits are allowed.
+    for (const v of ["0", "1001", "2.5", "abc", "1e2", "0x1f4", "0b11", "+300", "500.0", "3e2", "-5", "00500"])
       expect(() => feeConfigFromEnv({ PANTA_FEE_MODEL: "inclusive", PANTA_FEE_CAP_BPS: v }, false)).toThrow();
     expect(feeConfigFromEnv({ PANTA_FEE_MODEL: "inclusive", PANTA_FEE_CAP_BPS: "300" }, false).feeCapBps).toBe(300);
+    expect(feeConfigFromEnv({ PANTA_FEE_MODEL: "inclusive", PANTA_FEE_CAP_BPS: " 1000 " }, false).feeCapBps).toBe(1000);
   });
 });

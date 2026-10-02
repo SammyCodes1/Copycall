@@ -55,6 +55,19 @@ describe("panta-fee-model script", () => {
     expect(host.out).not.toContain(key);
   }, 60_000);
 
+  it("E-12: a key too short to redact safely makes the script refuse to run (never printed)", async () => {
+    for (const short of ["Zq", "Zq9x7"]) {
+      const r = await run({ MOCK_PANTA: "true", PANTA_API_KEY: short });
+      expect(r.code).toBe(1);
+      expect(r.out).toContain("too short");
+      expect(r.out).not.toContain(short);
+    }
+  }, 60_000);
+
+  it("E-12: documents that one quote may be up to 5 HTTP requests (429 retries)", () => {
+    expect(readFileSync(script, "utf8")).toContain("up to 5 HTTP requests");
+  });
+
   it("is quote-only: it never imports build, sign or send paths", () => {
     const src = readFileSync(script, "utf8");
     for (const banned of ["buildPrimaryOrder", "buildClaim", "reportTrade", "sendTransaction", "writeFile", "appendFile"])

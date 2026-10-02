@@ -22,7 +22,7 @@ type Quote = {
   feeUsdc: string;
   feeModel: "inclusive" | "on_top" | "no_fee";
   totalUsdc: string; // what leaves the wallet, fee included
-  maxUsdcOut: string; // the guard's limit: expected outflow, never above the max stake
+  maxUsdcOut: string; // the guard's limit: the max stake (E-10); the expected outflow is totalUsdc
   slippageBps: number;
   validUntil: number;
 };

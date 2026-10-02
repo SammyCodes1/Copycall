@@ -9,8 +9,10 @@
  * 2. Fee above the cap (stake x feeCapBps / 10_000, D-01): refuse.
  * 3. Pinned inclusive (or no fee): build from this quote; the wallet pays the stake.
  * 4. Pinned on top: re-quote ONCE with deposit = floor_cents(stake - fee).
- *    The re-quote must also read as on top (or no fee), its fee must be under
- *    the cap, and deposit + re-quoted fee must be <= stake. Otherwise refuse.
+ *    The re-quote must also read as on top (E-08: not no_fee), its fee must be
+ *    under the cap and no higher than the first quote's, and deposit +
+ *    re-quoted fee must be <= stake. Otherwise refuse. (Price drift between the
+ *    two quotes is bounded by the slippage limit and the min-shares check.)
  *    We don't assume the fee is monotone in the amount.
  *
  * Pure apart from the injected quote function, so the check script
@@ -118,7 +120,7 @@ export async function quoteWithinStake<Q extends QuoteLike>(
   const deposit = floorCents(stakeBase - first.feeBase);
   if (deposit <= 0n) throw new FeeModelError("FEE_TOO_HIGH", "The fee doesn't fit in your max stake");
   const second = await ask(deposit);
-  if (second.model === "no_fee") return result(second.q, "no_fee", deposit, 0n);
+  // E-08: under the on-top pin the re-quote must also be on top, with a fee no higher than the first.
   if (second.model !== "on_top") throw mismatch(second.model);
   if (deposit + second.feeBase > stakeBase) {
     throw new FeeModelError(
@@ -126,5 +128,7 @@ export async function quoteWithinStake<Q extends QuoteLike>(
       "With the fee on top, this copy wouldn't fit in your max stake. Nothing was sent.",
     );
   }
+  if (second.feeBase > first.feeBase)
+    throw new FeeModelError("FEE_TOO_HIGH", "Panta's fee went up on the re-quote, so we won't build it. Nothing was sent.");
   return result(second.q, "on_top", deposit, second.feeBase);
 }

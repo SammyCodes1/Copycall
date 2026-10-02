@@ -107,10 +107,14 @@ export type FlowDeps = UserDeps & {
   panta: FlowPanta;
   chain: Chain;
   pantaProgramIds: ReadonlySet<string>;
-  /** Pinned per deployment (PANTA_FEE_MODEL, lib/fee-config.ts). A quote that contradicts it is refused. */
-  feeModel: PinnedFeeModel;
+  /**
+   * Pinned per deployment (PANTA_FEE_MODEL, lib/fee-config.ts). A quote that contradicts it is refused.
+   * null = not configured or invalid: only quote and build refuse (503); claims, confirms and
+   * positions don't depend on it (E-09).
+   */
+  feeModel: PinnedFeeModel | null;
   /** Fee sanity cap as bps of the stake (PANTA_FEE_CAP_BPS, default 500). Quotes and builds above it are refused. */
-  feeCapBps: number;
+  feeCapBps: number | null;
   mock: boolean;
   nowMs?: () => number;
   confirmTimeoutMs?: number;
@@ -218,6 +222,13 @@ type QuoteToken = {
 export const QUOTE_VIEW_VERSION = 2;
 type CachedQuote = { v: number; view: QuoteView; stake: string; slippageBps: number };
 
+/** E-09: the fee config, required only where a fee is quoted or built. */
+function feePin(d: FlowDeps): { model: PinnedFeeModel; capBps: number } {
+  if (d.feeModel === null || d.feeCapBps === null)
+    throw new AuthError(503, "NOT_CONFIGURED", "Copying isn't configured on this server yet");
+  return { model: d.feeModel, capBps: d.feeCapBps };
+}
+
 /** D-05: alert once per process and (pin, reading) when Panta's quotes don't match the pinned fee model. */
 const feeModelAlerted = new Set<string>();
 function alertFeeModel(d: FlowDeps, code: string, detected: string | undefined) {
@@ -260,6 +271,7 @@ async function requireCopyable(d: FlowDeps, tradeId: string): Promise<CopyContex
  * query parameters are never read.
  */
 export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string): Promise<QuoteView> {
+  const pin = feePin(d);
   const session = await requireSession(d, request);
   await rateLimit(d, "copyquote", session.uid, QUOTE_RATE_LIMIT);
   const { trade, market } = await requireCopyable(d, tradeId);
@@ -296,7 +308,7 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
       if (r.marketId !== trade.marketId || fromApiSide(r.side) !== trade.side)
         throw new FeeModelError("QUOTE_MISMATCH", "Panta returned a quote for a different order");
       return r;
-    }, stakeBase, { pinned: d.feeModel, feeCapBps: d.feeCapBps });
+    }, stakeBase, { pinned: pin.model, feeCapBps: pin.capBps });
   } catch (err) {
     if (!(err instanceof FeeModelError)) throw err;
     d.log?.(`copy quote refused: ${err.code}${err.detected ? ` (${err.detected})` : ""}`);
@@ -485,6 +497,7 @@ async function assembleAndStore(
 /** POST /api/copy/[tradeId]/build { quoteToken } */
 export async function buildCopy(d: FlowDeps, request: Request, tradeId: string): Promise<BuiltTx> {
   assertSameOrigin(request, d.auth.appOrigin);
+  const pin = feePin(d);
   const session = await requireSession(d, request);
   await rateLimit(d, "copybuild", session.uid, BUILD_RATE_LIMIT);
   const parsed = CopyBuildRequestSchema.safeParse(await readJsonBody(request));
@@ -516,7 +529,7 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
   const stake = usdcToBase(settings.maxStakeUsdc);
   // The fee model, deposit and limit come from the quote record, detected at quote time.
   const model = tok.feeModel;
-  if (model !== "no_fee" && model !== d.feeModel) throw quoteExpired(); // the pin changed since the quote
+  if (model !== "no_fee" && model !== pin.model) throw quoteExpired(); // the pin changed since the quote
   const deposit = usdcToBase(tok.depositUsdc);
   const fee = usdcToBase(tok.feeUsdc);
   const maxOut = copyUsdcLimitBase(stake);
@@ -524,7 +537,7 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
   if (maxOut !== usdcToBase(tok.maxUsdcOut) || outflow > maxOut) {
     throw rejected("the quote doesn't fit your max stake");
   }
-  if (fee > feeCapBase(stake, d.feeCapBps)) throw rejected("the fee is above the cap");
+  if (fee > feeCapBase(stake, pin.capBps)) throw rejected("the fee is above the cap");
   if (
     b.wallet !== session.w ||
     b.marketId !== trade.marketId ||

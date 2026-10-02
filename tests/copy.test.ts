@@ -1492,3 +1492,20 @@ describe("E-04: the claim minimum doesn't trust Panta's winningShares", () => {
     expect(state.orders.get(b.orderId)?.shares).toBe(baseToUsdc(usdcToBase(win.shares)));
   });
 });
+
+describe("E-09: a missing fee config only blocks quote and build", () => {
+  it("quote and build answer 503; positions, claim build and claim confirm still work", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const ok = deps({ state });
+    const q = await quoteCopy(ok, get("/q", u), trade.id);
+    const off = deps({ state, feeModel: null, feeCapBps: null });
+    expect(await code(quoteCopy(off, get("/q", u), trade.id))).toBe("NOT_CONFIGURED");
+    expect(await code(buildCopy(off, post("/b", { quoteToken: q.quoteToken }, u), trade.id))).toBe("NOT_CONFIGURED");
+    const pos = await myPositions(off, get("/p", u));
+    const win = pos.positions.find((p) => p.status === "claimable")!;
+    const b = await buildClaimTx(off, post("/cb", { marketId: win.marketId }, u));
+    const req = post("/cc", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await confirmOrder(off, req, "claim")).toMatchObject({ status: "confirmed" });
+  });
+});

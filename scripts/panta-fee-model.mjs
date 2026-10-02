@@ -9,8 +9,11 @@
  *
  * - Calls POST /primaryorderquote/ once through lib/panta.ts (host allowlist,
  *   X-Api-Key header, schema validation). It NEVER builds, signs or sends anything.
+ *   "Once" is one logical quote: lib/panta.ts retries a 429 up to 4 times, so it can
+ *   be up to 5 HTTP requests (E-12).
  * - The key is read only from the server env (PANTA_API_KEY) by lib/panta.ts. It is
  *   never printed, logged or written: every line of output passes through redact().
+ *   A key shorter than 8 characters can't be redacted safely, so the script refuses to run.
  * - Exit 0 when the quote clearly matches inclusive or on_top, 2 when ambiguous or
  *   unknown (do not pin anything then), 1 on errors.
  */
@@ -21,10 +24,17 @@ import { randomBytes } from "node:crypto";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const secret = (process.env.PANTA_API_KEY ?? "").trim();
 
+const MIN_KEY_LEN = 8;
+if (secret.length > 0 && secret.length < MIN_KEY_LEN) {
+  // E-12: too short to redact without mangling every other line; never print it.
+  process.stderr.write("error: PANTA_API_KEY is too short to be a real key; refusing to run\n");
+  process.exit(1);
+}
+
 /** Remove the key (and anything that looks like a Panta key) from text before it is shown. */
 function redact(text) {
   let s = String(text);
-  if (secret.length >= 4) s = s.split(secret).join("[redacted]");
+  if (secret.length >= MIN_KEY_LEN) s = s.split(secret).join("[redacted]");
   return s.replace(/pk_(test|live)_[A-Za-z0-9_\-]+/g, "pk_$1_[redacted]");
 }
 const out = (line) => process.stdout.write(redact(line) + "\n");

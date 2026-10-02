@@ -145,7 +145,10 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    *on top* if shares ≈ amount / avgPrice, within 0.01 share + 5 bps. If both or neither fit, or the two predictions
    are closer than twice the tolerance, or the quote contradicts the pin, the copy is refused. With the fee on top
    the server re-quotes once with deposit = stake − fee (rounded down to the cent) and requires deposit + re-quoted
-   fee ≤ stake (`lib/fee-quote.ts`). Fees above `PANTA_FEE_CAP_BPS` of the stake (default 500 = 5%) are refused.
+   fee ≤ stake (`lib/fee-quote.ts`); the re-quote must read on top too (not no-fee) and its fee can't be higher
+   than the first quote's (E-08). Fees above `PANTA_FEE_CAP_BPS` of the stake (default 500 = 5%; plain digits
+   only, 1–1000) are refused. A missing or invalid fee config makes only quote and build answer 503; claims,
+   confirms and positions keep working (E-09).
    The model and deposit live on the quote record in `api_cache`; build uses only those. The static check counts
    the decoded deposit plus every top-level transfer (and the fee, for on top); the simulation measures the real
    USDC decrease. Slippage costs shares, never extra USDC.
