@@ -115,11 +115,23 @@ export interface CopyStore {
     maxAttempts: number;
   }): Promise<{ order: PendingOrder; attempts: number }[]>;
   /**
-   * H-03: fail pending orders we never broadcast, created before `createdBefore` (seconds). No
-   * confirm path can record those any more (the quote and the signature window are both over).
-   * Returns how many were failed.
+   * I-02: claim the ONE next order by the same rules (limit 1), skipping `exclude` (the ids this
+   * run already handled), or null. Migration 0017.
    */
-  failUnbroadcastBefore(createdBefore: number): Promise<number>;
+  claimNextBroadcastSweep(p: {
+    createdBefore: number;
+    createdAfter: number;
+    maxAttempts: number;
+    exclude: string[];
+  }): Promise<{ order: PendingOrder; attempts: number } | null>;
+  /**
+   * H-03 / J-06: pending orders we never broadcast, created before `createdBefore` (seconds),
+   * oldest first, at most `limit`. The sweep fails them one by one (failIfUnbroadcast) only once
+   * their blockhash is positively invalid, so one bad row can't stop the others.
+   */
+  listUnbroadcastBefore(createdBefore: number, limit: number): Promise<PendingOrder[]>;
+  /** J-06: fail this order only if it is still pending and never broadcast. True if it was failed. */
+  failIfUnbroadcast(orderId: string): Promise<boolean>;
   /** G-03: count one more broadcast of this pending order's signed bytes; false if over `max` (or not pending). */
   noteSendAttempt(orderId: string, max: number): Promise<boolean>;
   /** After POST /trades/: copies.status = reported, reported_at = now (claims: reported_at). */

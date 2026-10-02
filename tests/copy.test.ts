@@ -2135,6 +2135,8 @@ describe("Addendum G: broadcast liveness, definite rejections, bounded re-sends,
       const alerts: string[] = [];
       const ld = later(state, { chain: dropping(o), alert: (m) => alerts.push(m) });
       for (let i = 1; i < SWEEP.maxAttempts; i++) expect(await sweepBroadcastOrders(ld)).toMatchObject({ checked: 1, pending: 1 });
+      // I-03: failed at the cap only because it is provably dead (blockhash positively invalid, no trace).
+      (o as { valid?: boolean }).valid = false;
       expect(await sweepBroadcastOrders(ld)).toMatchObject({ checked: 1, gaveUp: 1 });
       expect(state.orders.get(b.orderId)?.status).toBe("failed");
       expect(alerts.join("\n")).toMatch(/sweep gave up/);
@@ -2476,8 +2478,13 @@ describe("H-03: a 5xx before broadcast is resolved, never left polling a transac
     const state = createCopyMemoryState();
     const d = deps({ state });
     const { b } = await quoteAndBuild(d, u);
-    const at = (min: number) => deps({ state, nowMs: () => Date.now() + min * 60_000 });
+    const dead = { ...chain, isBlockhashValid: async () => false };
+    const at = (min: number, c: FlowDeps["chain"] = dead) => deps({ state, chain: c, nowMs: () => Date.now() + min * 60_000 });
     expect((await sweepBroadcastOrders(at(15))).abandoned).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    // The one rule: past the window but isBlockhashValid not positively false (true, or an error): kept.
+    expect((await sweepBroadcastOrders(at(17, chain))).abandoned).toBe(0);
+    expect((await sweepBroadcastOrders(at(17, { ...chain, isBlockhashValid: () => Promise.reject(new Error("rpc")) }))).abandoned).toBe(0);
     expect(state.orders.get(b.orderId)?.status).toBe("pending");
     expect((await sweepBroadcastOrders(at(17))).abandoned).toBe(1);
     expect(state.orders.get(b.orderId)?.status).toBe("failed");
@@ -2841,6 +2848,159 @@ describe("Addendum I/J: an order is failed only when provably dead (no trace AND
       } finally {
         w.restore();
       }
+    });
+  });
+
+  describe("I-02 / I-03 / I-05 / J-06: the sweep never strands, never fails a landed copy on a guess, and isolates the abandon step", () => {
+    const at = (state: CopyMemoryState, over: Partial<FlowDeps> = {}) =>
+      deps({ state, nowMs: () => Date.now() + 2 * 60_000, ...over });
+    /** A broadcast, unrecorded order (sent quietly: not on the mock chain unless `land`). */
+    const broadcastOrder = async (state: CopyMemoryState, u: User, land = false) => {
+      const sends: Uint8Array[] = [];
+      const { b, sig, first } = await signed(deps({ state, chain: quiet(sends) }), u);
+      await confirmOrder(deps({ state, chain: quiet(sends) }), post("/c", first, u), "copy");
+      if (land) await chain.send(sends[0]);
+      return { b, sig };
+    };
+    const withBudget = async <T,>(ms: number, f: () => Promise<T>) => {
+      const prev = SWEEP.budgetMs;
+      SWEEP.budgetMs = ms;
+      try {
+        return await f();
+      } finally {
+        SWEEP.budgetMs = prev;
+      }
+    };
+
+    it("I-02: an order the run can't reach (budget) isn't claimed: no lost attempt, and it goes first next run", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const one = await broadcastOrder(state, u);
+      const two = await broadcastOrder(state, u);
+      const slow = { ...chain, waitForConfirmation: async () => (await new Promise((r) => setTimeout(r, 80)), "pending" as const) };
+      const r = await withBudget(50, () => sweepBroadcastOrders(at(state, { chain: slow })));
+      expect(r).toMatchObject({ checked: 1, skipped: 1 });
+      expect(state.sweep.get(one.b.orderId)?.attempts).toBe(1);
+      expect(state.sweep.get(two.b.orderId)).toBeUndefined(); // never claimed, so no attempt burned
+      const seen: string[] = [];
+      const store = createMemoryCopyStore(state);
+      await sweepBroadcastOrders(
+        at(state, {
+          copy: {
+            ...store,
+            claimNextBroadcastSweep: async (p: Parameters<typeof store.claimNextBroadcastSweep>[0]) => {
+              const x = await store.claimNextBroadcastSweep(p);
+              if (x) seen.push(x.order.id);
+              return x;
+            },
+          },
+        }),
+      );
+      expect(seen).toEqual([two.b.orderId, one.b.orderId]);
+    });
+
+    it("I-05: a hung RPC read can't hold the run past its budget", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      await broadcastOrder(state, u);
+      const hung = { ...chain, getLandedTransaction: () => new Promise<null>(() => {}) };
+      const t0 = Date.now();
+      const r = await withBudget(60, () => sweepBroadcastOrders(at(state, { chain: hung })));
+      expect(Date.now() - t0).toBeLessThan(1000);
+      expect(r).toMatchObject({ checked: 1, skipped: 1, errors: 1 });
+    });
+
+    it("I-02: the 30th attempt throwing an unexpected error doesn't strand the order silently (alert; failed only if provably dead)", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const { b } = await broadcastOrder(state, u);
+      const alerts: string[] = [];
+      const ok = at(state, { chain: quiet([]) }); // never lands
+      for (let i = 1; i < SWEEP.maxAttempts; i++) expect(await sweepBroadcastOrders(ok)).toMatchObject({ pending: 1 });
+      const boom = at(state, {
+        alert: (m) => alerts.push(m),
+        chain: { ...chain, waitForConfirmation: () => Promise.reject(new Error("socket hang up")) },
+      });
+      expect(await sweepBroadcastOrders(boom)).toMatchObject({ checked: 1, errors: 1, exhausted: 1, failed: 0 });
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+      expect(alerts.join("\n")).toMatch(/NOT failed: it may have landed/);
+      expect(await sweepBroadcastOrders(ok)).toMatchObject({ checked: 0 });
+    });
+
+    it("I-02: ... and with the blockhash positively invalid and no trace, the 30th erroring attempt fails it", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const { b } = await broadcastOrder(state, u);
+      for (let i = 1; i < SWEEP.maxAttempts; i++) await sweepBroadcastOrders(at(state, { chain: quiet([]) }));
+      const boom = at(state, {
+        chain: { ...chain, isBlockhashValid: async () => false, waitForConfirmation: () => Promise.reject(new Error("x")) },
+      });
+      expect(await sweepBroadcastOrders(boom)).toMatchObject({ checked: 1, errors: 1, gaveUp: 1 });
+      expect(state.orders.get(b.orderId)?.status).toBe("failed");
+    });
+
+    for (const [name, over] of [
+      ["status confirmed but getTransaction null", { chain: { ...chain, waitForConfirmation: async () => "confirmed" as const, getLandedTransaction: async () => null } }],
+      ["MAX_STAKE_USDC unset (VERIFY_UNAVAILABLE)", { maxStakeCapBase: null }],
+    ] as const) {
+      it(`I-03: a landed copy that is unverifiable for 30 runs (${name}) is never failed: alert, kept pending, recorded later`, async () => {
+        const u = await signedInUser();
+        const state = createCopyMemoryState();
+        const { b, sig } = await broadcastOrder(state, u, true);
+        const alerts: string[] = [];
+        const d = at(state, { ...over, alert: (m) => alerts.push(m) } as Partial<FlowDeps>);
+        for (let i = 1; i < SWEEP.maxAttempts; i++) await sweepBroadcastOrders(d);
+        const r = await sweepBroadcastOrders(d);
+        expect(r).toMatchObject({ checked: 1, gaveUp: 0, exhausted: 1 });
+        expect(state.orders.get(b.orderId)?.status).toBe("pending");
+        expect(alerts.join("\n")).toMatch(/NOT failed/);
+        expect(alerts.join("\n")).not.toMatch(/never landed/);
+        // Revivable by signature: once verifiable, confirm records it.
+        expect((await confirmOrder(deps({ state }), post("/c", { orderId: b.orderId, signature: sig }, u), "copy")).status).toBe("confirmed");
+      });
+    }
+
+    it("J-06: a failing abandon step can't abort the sweep; the broadcast orders are still checked and recorded", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const { b } = await broadcastOrder(state, u, true);
+      const store = createMemoryCopyStore(state);
+      const alerts: string[] = [];
+      const r = await sweepBroadcastOrders(
+        at(state, {
+          alert: (m) => alerts.push(m),
+          copy: { ...store, listUnbroadcastBefore: () => Promise.reject(new AuthError(500, "DB", "violates check constraint")) },
+        }),
+      );
+      expect(r).toMatchObject({ checked: 1, confirmed: 1, abandoned: 0 });
+      expect(state.orders.get(b.orderId)?.status).toBe("confirmed");
+      expect(alerts.join("\n")).toMatch(/abandon step skipped/);
+    });
+
+    it("J-06: one never-broadcast row that can't be failed (e.g. a NOT VALID ceiling row) doesn't stop the others", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const { b: bad } = await quoteAndBuild(deps({ state }), u);
+      const { b: good } = await quoteAndBuild(deps({ state }), u);
+      const store = createMemoryCopyStore(state);
+      const alerts: string[] = [];
+      const r = await sweepBroadcastOrders(
+        deps({
+          state,
+          nowMs: () => Date.now() + 17 * 60_000,
+          alert: (m) => alerts.push(m),
+          chain: { ...chain, isBlockhashValid: async () => false },
+          copy: {
+            ...store,
+            failIfUnbroadcast: async (id: string) =>
+              id === bad.orderId ? Promise.reject(new AuthError(500, "DB", "ceiling")) : store.failIfUnbroadcast(id),
+          },
+        }),
+      );
+      expect(r.abandoned).toBe(1);
+      expect(state.orders.get(good.orderId)?.status).toBe("failed");
+      expect(state.orders.get(bad.orderId)?.status).toBe("pending");
+      expect(alerts.join("\n")).toMatch(/couldn't be failed/);
     });
   });
 });

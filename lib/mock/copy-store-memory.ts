@@ -151,14 +151,41 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
         return { order: { ...o }, attempts: next.attempts };
       });
     },
-    async failUnbroadcastBefore(createdBefore) {
-      let n = 0;
-      for (const o of s.orders.values())
-        if (o.status === "pending" && o.broadcastSignature === null && o.createdAt < createdBefore) {
-          o.status = "failed";
-          n++;
-        }
-      return n;
+    async claimNextBroadcastSweep(p) {
+      const ex = new Set(p.exclude);
+      const due = [...s.orders.values()]
+        .filter(
+          (o) =>
+            o.status === "pending" &&
+            o.broadcastSignature !== null &&
+            !ex.has(o.id) &&
+            o.createdAt < p.createdBefore &&
+            o.createdAt > p.createdAfter &&
+            (s.sweep.get(o.id)?.attempts ?? 0) < p.maxAttempts,
+        )
+        .sort((a, b) => {
+          const la = s.sweep.get(a.id)?.at ?? -1;
+          const lb = s.sweep.get(b.id)?.at ?? -1;
+          return la !== lb ? la - lb : a.createdAt - b.createdAt;
+        });
+      const o = due[0];
+      if (!o) return null;
+      const next = { attempts: (s.sweep.get(o.id)?.attempts ?? 0) + 1, at: ++s.sweepClock };
+      s.sweep.set(o.id, next);
+      return { order: { ...o }, attempts: next.attempts };
+    },
+    async listUnbroadcastBefore(createdBefore, limit) {
+      return [...s.orders.values()]
+        .filter((o) => o.status === "pending" && o.broadcastSignature === null && o.createdAt < createdBefore)
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(0, Math.max(0, Math.min(100, limit)))
+        .map((o) => ({ ...o }));
+    },
+    async failIfUnbroadcast(orderId) {
+      const o = s.orders.get(orderId);
+      if (!o || o.status !== "pending" || o.broadcastSignature !== null) return false;
+      o.status = "failed";
+      return true;
     },
     async noteSendAttempt(orderId, max) {
       const o = s.orders.get(orderId);

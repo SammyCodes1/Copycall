@@ -214,16 +214,45 @@ export const supabaseCopyStore: CopyStore = {
       return order ? [{ order, attempts: c.attempts }] : [];
     });
   },
-  async failUnbroadcastBefore(createdBefore) {
+  async claimNextBroadcastSweep(p) {
+    const db = getDb();
+    const { data, error } = await db.rpc("claim_broadcast_sweep_next", {
+      p_created_before: iso(p.createdBefore),
+      p_created_after: iso(p.createdAfter),
+      p_max_attempts: p.maxAttempts,
+      p_exclude: p.exclude,
+    });
+    if (error) fail("claim broadcast sweep");
+    const row = ((data ?? []) as { order_id: unknown; attempts: unknown }[])[0];
+    if (!row) return null;
+    // Numerics are read as text (E-01), so the order is fetched with the usual select.
+    const r = await db.from("pending_orders").select(ORDER_COLS).eq("id", String(row.order_id)).maybeSingle();
+    if (r.error) fail("claim broadcast sweep");
+    return r.data ? { order: toOrder(r.data as unknown as OrderRow), attempts: Number(row.attempts) } : null;
+  },
+  async listUnbroadcastBefore(createdBefore, limit) {
     const { data, error } = await getDb()
       .from("pending_orders")
-      .update({ status: "failed" })
+      .select(ORDER_COLS)
       .eq("status", "pending")
       .is("broadcast_signature", null)
       .lt("created_at", iso(createdBefore))
+      .order("created_at", { ascending: true })
+      .limit(Math.max(0, Math.min(100, limit)));
+    if (error) fail("list unbroadcast orders");
+    return ((data ?? []) as unknown as OrderRow[]).map(toOrder);
+  },
+  async failIfUnbroadcast(orderId) {
+    // Same predicate as before, re-checked on the latest row version: never a broadcast order.
+    const { data, error } = await getDb()
+      .from("pending_orders")
+      .update({ status: "failed" })
+      .eq("id", orderId)
+      .eq("status", "pending")
+      .is("broadcast_signature", null)
       .select("id");
-    if (error) fail("fail unbroadcast orders");
-    return (data ?? []).length;
+    if (error) fail("fail unbroadcast order");
+    return (data ?? []).length === 1;
   },
   async noteSendAttempt(orderId, max) {
     const { data, error } = await getDb().rpc("note_send_attempt", { p_order_id: orderId, p_max: max });

@@ -178,6 +178,45 @@ describe("G-02 / G-03: claim_broadcast_sweep and note_send_attempt (0015)", () =
   }, 60_000);
 });
 
+describe("I-02: claim_broadcast_sweep_next (0017) claims one order at a time and skips this run's", () => {
+  it("one row, same order as 0015, excludes handled ids, bumps only what it returns, re-runnable, service_role only", async () => {
+    const db = await freshDb();
+    const { u } = await legacyRows(db);
+    for (const f of from8) await db.exec(readFileSync(join(dir, f), "utf8"));
+    // Re-running 0017 is fine.
+    await db.exec(readFileSync(join(dir, files.find((f) => f.includes("sweep_claim_next"))!), "utf8"));
+    const mk = async (ageMin: number, sig: string | null) =>
+      (
+        await db.query<{ id: string }>(
+          `insert into public.pending_orders (user_id, wallet, kind, market_id, side, amount_usdc, shares, message_hash, message_base64, expires_at, created_at, broadcast_signature)
+           values ($1, 'legacyW', 'claim', 'mL', 'YES', 1, 1, $2, 'AA==', now(), now() - make_interval(mins => $3), $4) returning id`,
+          [u, "c".repeat(64), ageMin, sig],
+        )
+      ).rows[0].id;
+    const sig = (n: number) => "1".repeat(63) + "ABCDEFG"[n];
+    const a = await mk(30, sig(1));
+    const b = await mk(20, sig(3));
+    await mk(15, null);
+    const next = (exclude: string[], max = 3) =>
+      db
+        .query<{ order_id: string; attempts: number }>(
+          `select * from public.claim_broadcast_sweep_next(now() - interval '1 minute', now() - interval '1 day', $1, $2::uuid[])`,
+          [max, exclude],
+        )
+        .then((r) => r.rows);
+    expect(await next([])).toEqual([{ order_id: a, attempts: 1 }]);
+    expect(await next([a])).toEqual([{ order_id: b, attempts: 1 }]);
+    expect(await next([a, b])).toEqual([]); // the run is over: nothing else bumped
+    const attempts = async () =>
+      (await db.query<{ id: string; sweep_attempts: number }>(`select id, sweep_attempts from public.pending_orders where id in ($1, $2) order by created_at`, [a, b])).rows.map((r) => r.sweep_attempts);
+    expect(await attempts()).toEqual([1, 1]);
+    expect(await next([], 1)).toEqual([]); // the cap holds
+    await db.exec(`set role anon`);
+    await expect(next([])).rejects.toThrow(/permission denied/);
+    await db.exec(`reset role`);
+  }, 60_000);
+});
+
 describe("H-06: 0014 never fails on old rows above 1000; 0016 bounds the saved stake", () => {
   const upTo = (db: PGlite, last: string) =>
     (async () => {

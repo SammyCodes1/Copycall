@@ -259,9 +259,9 @@ crons (see Batch 2), open the copy link from the log, Review and sign, then visi
 1. Create a Supabase project. Apply the SQL in `supabase/migrations/` in order
    (Supabase CLI: `supabase db push`, or paste each file into the SQL editor).
    **Deploy order for an existing database:** apply migrations 0008 → 0013, then 0014 (stake
-   ceiling), 0015 (sweep attempts / bounded re-sends) and 0016 (user stake ceiling), and only then
-   deploy the app (the app calls `claim_broadcast_sweep` / `note_send_attempt` and writes columns
-   those migrations add).
+   ceiling), 0015 (sweep attempts / bounded re-sends), 0016 (user stake ceiling) and 0017 (the
+   sweep's one-at-a-time claim), and only then deploy the app (the app calls
+   `claim_broadcast_sweep_next` / `note_send_attempt` and writes columns those migrations add).
    **Pre-check before 0014 (H-06)**, which must return no rows:
    ```sql
    select id, kind, status, amount_usdc, max_usdc_out, created_at
@@ -271,11 +271,13 @@ crons (see Batch 2), open the copy link from the log, Review and sign, then visi
    0014 adds its ceilings `NOT VALID` and validates them only when that query is empty, so it never
    fails on old rows; otherwise it logs a warning and the ceilings apply to new and updated rows only.
    Any UPDATE of a listed row (complete or fail) then errors, so resolve those rows by hand first (they
-   predate the 1000 cap; there should be none), then run
+   predate the 1000 cap; there should be none). The cron sweep depends on this: it fails stale
+   never-broadcast orders one by one and alerts on each row it can't update (J-06), so such a row
+   is retried and alerted on every run until it is resolved. Then run
    `alter table public.pending_orders validate constraint pending_orders_max_usdc_out_ceiling;` and the
    same for `pending_orders_copy_amount_ceiling`. 0016 clamps any saved `users.max_stake_usdc` above
    1000 to 1000 (unusable anyway: the launch cap is ≤ 1000) before adding its ceiling.
-   Re-runs: 0012, 0014, 0015 and 0016 are safe to re-run. 0008 and 0013 are not (plain `add column` /
+   Re-runs: 0012, 0014, 0015, 0016 and 0017 are safe to re-run. 0008 and 0013 are not (plain `add column` /
    `add constraint`; they error on a second run instead of changing anything), so apply each once.
    0008 was also edited after first release: a database that ran its first version is repaired by
    0012, not by re-running 0008.

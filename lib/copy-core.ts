@@ -1216,84 +1216,171 @@ async function verifyAndRecord(
   return { status: "confirmed", signature, reported, simulated, kind };
 }
 
-export const SWEEP = { limit: 20, minAgeSec: 60, maxAttempts: 30, budgetMs: 60_000 };
+export const SWEEP = { limit: 20, minAgeSec: 60, maxAttempts: 30, budgetMs: 60_000, abandonLimit: 50 };
 export type SweepSummary = {
   checked: number;
   confirmed: number;
   pending: number;
+  /** Definite rejections (the order was failed by the checks). */
   failed: number;
   unavailable: number;
-  /** G-02: orders failed because they hit SWEEP.maxAttempts without landing. */
+  /** I-02: unexpected errors (RPC/DB), counted apart from rejections; the order stays pending. */
+  errors: number;
+  /** G-02 / I-03: orders failed at SWEEP.maxAttempts because they were provably dead. */
   gaveUp: number;
-  /** Orders claimed but not reached within SWEEP.budgetMs (they keep their turn order). */
+  /** I-03: orders at SWEEP.maxAttempts NOT provably dead: kept pending (revivable), with an alert. */
+  exhausted: number;
+  /** I-02: 1 if the budget stopped the run early. Unclaimed orders lose no attempt and keep their turn. */
   skipped: number;
-  /** H-03: never-broadcast pending orders past every confirm window, failed. */
+  /** H-03 / J-06: never-broadcast orders past every confirm window with a positively invalid blockhash, failed. */
   abandoned: number;
 };
+
+/** I-05: race one step against the remaining budget. A late step keeps running but is not awaited. */
+async function withinBudget<T>(p: Promise<T>, ms: number): Promise<{ ok: true; value: T } | { ok: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<{ ok: false }>((r) => (timer = setTimeout(() => r({ ok: false }), Math.max(0, ms))));
+  try {
+    return await Promise.race([p.then((value) => ({ ok: true as const, value })), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * E-02 cron step: pending orders whose signature we broadcast but never
  * verified (lost response, VERIFY_UNAVAILABLE, closed tab) are verified and
  * recorded server-side, with exactly the checks confirm runs.
- * G-02: least recently swept first, each claim bumps an attempt counter, and an order that
- * still hasn't landed after SWEEP.maxAttempts is failed (it stays revivable by signature).
+ * G-02: least recently swept first; each claim bumps an attempt counter.
+ * I-02: orders are claimed ONE at a time, only while the budget lasts, so an order the run can't
+ * reach is never claimed (no lost attempt, no lost turn). I-05: each order's check is raced
+ * against the remaining budget (and every RPC call has its own timeout, RPC_TIMEOUT_MS).
+ * I-03: at SWEEP.maxAttempts an order is failed ONLY if provablyDead; otherwise it is kept
+ * pending (revivable by signature) with an alert, whatever the last attempt's outcome was.
  * G-03: an order not found on chain is re-sent while its blockhash is valid (bounded).
  */
 export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
   const now = nowSec(d);
   const started = Date.now();
-  const claimed = await d.copy.claimBroadcastSweep({
-    limit: SWEEP.limit,
-    createdBefore: now - SWEEP.minAgeSec,
-    createdAfter: now - BROADCAST_LOOKUP_SEC,
-    maxAttempts: SWEEP.maxAttempts,
-  });
+  const left = () => SWEEP.budgetMs - (Date.now() - started);
   const out: SweepSummary = {
-    checked: claimed.length,
+    checked: 0,
     confirmed: 0,
     pending: 0,
     failed: 0,
     unavailable: 0,
+    errors: 0,
     gaveUp: 0,
+    exhausted: 0,
     skipped: 0,
-    // H-03: past the quote AND the 15 min signature window nothing can record these, and their
-    // blockhash is long expired: fail them so they don't sit as "pending" (+60 s margin).
-    abandoned: await d.copy.failUnbroadcastBefore(now - ORDER_LOOKUP_SEC - 60),
+    abandoned: 0,
   };
   const alert = d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`));
-  const giveUp = async (o: PendingOrder, why: string) => {
-    await d.copy.failOrder(o.id);
-    out.gaveUp++;
-    alert(`sweep gave up on ${o.kind} ${o.id.slice(0, 8)} after ${SWEEP.maxAttempts} checks (${why})`);
-  };
-  for (const { order: o, attempts } of claimed) {
-    if (!o.broadcastSignature) continue;
-    if (Date.now() - started > SWEEP.budgetMs) {
-      out.skipped++;
-      continue;
-    }
-    const last = attempts >= SWEEP.maxAttempts;
+  const atCap = async (o: PendingOrder, sig: string, why: string) => {
+    // I-02 / I-03: decided on every outcome of the last attempt (pending, unavailable, error, timeout).
+    let st: PendingOrder["status"] | undefined;
     try {
-      await maybeResend(d, o, o.broadcastSignature);
-      // G-01: timeout 0 still means one status read (see Chain.waitForConfirmation).
-      const r = await verifyAndRecord(
-        { ...d, confirmTimeoutMs: 0 },
-        o,
-        { uid: o.userId, wallet: o.wallet },
-        o.broadcastSignature,
-        { simulated: false, revive: false, definite: true },
-      );
-      if (r.status === "confirmed") out.confirmed++;
-      else if (last) await giveUp(o, "never landed");
-      else out.pending++;
-    } catch (err) {
-      const code = err instanceof AuthError ? err.code : "error";
-      if (code === "VERIFY_UNAVAILABLE") {
-        if (last) await giveUp(o, "unverifiable");
-        else out.unavailable++;
-      } else out.failed++;
-      d.log?.(`sweep ${o.kind} ${o.id.slice(0, 8)}: ${code}`);
+      st = (await d.copy.getPendingOrder(o.id))?.status;
+    } catch {
+      st = "pending";
     }
+    if (st !== "pending") return;
+    if (await provablyDead(d, o, sig)) {
+      await d.copy.failOrder(o.id);
+      out.gaveUp++;
+      alert(`sweep gave up on ${o.kind} ${o.id.slice(0, 8)} after ${SWEEP.maxAttempts} checks: provably expired (no trace, blockhash invalid)`);
+    } else {
+      out.exhausted++;
+      alert(
+        `sweep stopped checking ${o.kind} ${o.id.slice(0, 8)} (${sig.slice(0, 8)}…) after ${SWEEP.maxAttempts} checks (${why}); NOT failed: it may have landed. Kept pending, revivable by signature`,
+      );
+    }
+  };
+  const seen: string[] = [];
+  while (out.checked < SWEEP.limit) {
+    if (left() <= 0) {
+      out.skipped = 1;
+      break;
+    }
+    const next = await d.copy.claimNextBroadcastSweep({
+      createdBefore: now - SWEEP.minAgeSec,
+      createdAfter: now - BROADCAST_LOOKUP_SEC,
+      maxAttempts: SWEEP.maxAttempts,
+      exclude: seen,
+    });
+    if (!next) break;
+    seen.push(next.order.id);
+    out.checked++;
+    const { order: o, attempts } = next;
+    const sig = o.broadcastSignature;
+    if (!sig) continue;
+    const last = attempts >= SWEEP.maxAttempts;
+    let why = "still pending";
+    const step = (async () => {
+      await maybeResend(d, o, sig);
+      // G-01: timeout 0 still means one status read (see Chain.waitForConfirmation).
+      return verifyAndRecord({ ...d, confirmTimeoutMs: 0 }, o, { uid: o.userId, wallet: o.wallet }, sig, {
+        simulated: false,
+        revive: false,
+        definite: true,
+      });
+    })();
+    try {
+      const r = await withinBudget(step, left());
+      if (!r.ok) {
+        step.catch(() => undefined);
+        out.errors++;
+        out.skipped = 1;
+        why = "timed out";
+        d.log?.(`sweep ${o.kind} ${o.id.slice(0, 8)}: budget ran out mid-check`);
+        if (last) alert(`sweep: last check of ${o.kind} ${o.id.slice(0, 8)} timed out; kept pending, revivable by signature`);
+        break;
+      }
+      if (r.value.status === "confirmed") {
+        out.confirmed++;
+        continue;
+      }
+      out.pending++;
+    } catch (err) {
+      const code = err instanceof AuthError ? err.code : null;
+      if (code === "VERIFY_UNAVAILABLE") {
+        out.unavailable++;
+        why = "unverifiable";
+      } else if (code !== null) {
+        out.failed++;
+        why = code;
+      } else {
+        out.errors++;
+        why = "error";
+      }
+      d.log?.(`sweep ${o.kind} ${o.id.slice(0, 8)}: ${code ?? "error"}`);
+    }
+    if (last) {
+      try {
+        await atCap(o, sig, why);
+      } catch {
+        alert(`sweep: couldn't settle ${o.kind} ${o.id.slice(0, 8)} at ${SWEEP.maxAttempts} checks; kept pending`);
+      }
+    }
+  }
+  // J-06: the abandon step runs AFTER the loop, isolated: a DB error can't stop the checks above,
+  // and one bad row (e.g. a NOT VALID ceiling row) can't stop the others.
+  // H-03: past the quote AND the 15 min signature window nothing can record these (+60 s margin);
+  // they are failed only once their blockhash is positively invalid (an RPC error = keep).
+  try {
+    const stale = await d.copy.listUnbroadcastBefore(now - ORDER_LOOKUP_SEC - 60, SWEEP.abandonLimit);
+    let rowErrors = 0;
+    for (const o of stale) {
+      try {
+        if ((await blockhashState(d, o)) !== "expired") continue;
+        if (await d.copy.failIfUnbroadcast(o.id)) out.abandoned++;
+      } catch {
+        rowErrors++;
+      }
+    }
+    if (rowErrors > 0) alert(`sweep: ${rowErrors} never-broadcast order(s) couldn't be failed (see README pre-check)`);
+  } catch {
+    alert("sweep: listing never-broadcast orders failed; abandon step skipped this run");
   }
   return out;
 }
