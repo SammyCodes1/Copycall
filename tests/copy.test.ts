@@ -40,10 +40,18 @@ import { PantaError } from "@/lib/panta-error";
 import { REPORT_RETRY, runReportRetries } from "@/lib/report-retry";
 import { copyAmounts, totalWithFeeShort } from "@/lib/copy-math";
 import * as panta from "@/lib/panta";
-import { USDC_MINT, associatedTokenAddress, baseToUsdc, usdcToBase } from "@/lib/solana-constants";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, USDC_MINT, associatedTokenAddress, baseToUsdc, usdcToBase } from "@/lib/solana-constants";
 import type { StoredTrade } from "@/lib/data-store";
 import { SendError, type LandedTx } from "@/lib/chain";
-import { checkInnerSystemOps, checkWalletAccount, innerSystemOps, type SimulationResult } from "@/lib/tx-guard";
+import {
+  checkInnerSystemOps,
+  checkTokenAuthorityOps,
+  checkWalletAccount,
+  innerSystemOps,
+  tokenAccountDrift,
+  tokenAuthorityOps,
+  type SimulationResult,
+} from "@/lib/tx-guard";
 import { ED25519_L } from "@/lib/ed25519";
 import type { PendingOrder } from "@/lib/copy-store";
 import { apiRequest, signedInUser } from "./helpers/session";
@@ -3072,5 +3080,166 @@ describe("I-01: a revive of a failed order says 'nothing was spent' only with th
     expect((await confirmOrder(hint, post("/c", { orderId: b.orderId, signature: sig }, u), "copy")).status).toBe("pending");
     const dead = deps({ state, chain: { ...quiet, waitForConfirmation: async () => "expired" as const, isBlockhashValid: async () => false } });
     expect(await code(confirmOrder(dead, post("/c", { orderId: b.orderId, signature: sig }, u), "copy"))).toBe("QUOTE_EXPIRED");
+  });
+});
+
+describe("H-04: F-02 is re-checked at confirm (landed token instructions; current USDC account alert-only)", () => {
+  const chain = getSharedMockChain();
+  const TOKEN = TOKEN_PROGRAM_ID;
+  const TOKEN22 = TOKEN_2022_PROGRAM_ID;
+  const withLanded = (over: (t: LandedTx, ata: string) => Partial<LandedTx>, extra: Partial<FlowDeps["chain"]> = {}) => ({
+    ...chain,
+    getLandedTransaction: async (sig: string) => {
+      const t = await chain.getLandedTransaction(sig);
+      return t && { ...t, ...over(t, associatedTokenAddress(t.message.staticAccountKeys[0].toBase58())) };
+    },
+    ...extra,
+  });
+  const confirmWith = async (c: FlowDeps["chain"], afterBuild?: () => void) => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const alerts: string[] = [];
+    const d = deps({ state, chain: c, alert: (m: string) => alerts.push(m) });
+    const { b } = await quoteAndBuild(d, u);
+    afterBuild?.();
+    const req = () => post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    return { res: await code(confirmOrder(d, req(), "copy")), again: () => code(confirmOrder(d, req(), "copy")), state, b, alerts, u };
+  };
+
+  for (const type of ["approve", "approveChecked", "setAuthority", "closeAccount"]) {
+    it(`a landed ${type} on the user's USDC account (the slot/clock-branching attack) is refused, the order failed, alerted`, async () => {
+      const r = await confirmWith(withLanded((_t, ata) => ({ tokenAuthorityOps: [{ type, target: ata }] })));
+      expect(r.res).toBe("TX_REJECTED");
+      expect(r.state.copies.size).toBe(0);
+      expect(r.state.orders.get(r.b.orderId)?.status).toBe("failed");
+      expect(r.alerts.join("\n")).toMatch(/USDC_AUTHORITY/);
+    });
+  }
+
+  it("a delegate/close on some OTHER token account (e.g. Panta's vault) is fine: recorded", async () => {
+    const other = Keypair.generate().publicKey.toBase58();
+    const r = await confirmWith(withLanded(() => ({ tokenAuthorityOps: [{ type: "approve", target: other }, { type: "closeAccount", target: other }] })));
+    expect(r.res).toBe("OK");
+    expect(r.state.copies.size).toBe(1);
+  });
+
+  it("missing or unreadable token instructions: retryable, never recorded or failed (alerted once)", async () => {
+    const none = await confirmWith(withLanded(() => ({ tokenAuthorityOps: null })));
+    expect(none.res).toBe("VERIFY_UNAVAILABLE");
+    expect(none.state.orders.get(none.b.orderId)?.status).toBe("pending");
+    const unknown = await confirmWith(withLanded(() => ({ tokenAuthorityOps: [{ type: "unknown", target: null }] })));
+    expect(unknown.res).toBe("VERIFY_UNAVAILABLE");
+    expect(await unknown.again()).toBe("VERIFY_UNAVAILABLE");
+    expect(unknown.state.copies.size).toBe(0);
+    expect(unknown.state.orders.get(unknown.b.orderId)?.status).toBe("pending");
+    expect(unknown.alerts.filter((m) => m.includes("TOKEN_UNKNOWN")).length).toBe(1);
+  });
+
+  it("the auditor's suggestion: the USDC account NOW differs from the template -> recorded (may be a later user action) + one alert", async () => {
+    // The user sets a delegate AFTER the build (the simulation saw a plain account).
+    let later = false;
+    const withDelegate = {
+      getTokenAccounts: async (owner: string) =>
+        (await chain.getTokenAccounts(owner)).map((a) => {
+          if (!later || a.pubkey !== associatedTokenAddress(owner)) return a;
+          const data = Buffer.from(a.data);
+          data.writeUInt32LE(1, 72); // delegate: Some
+          Keypair.generate().publicKey.toBuffer().copy(data, 76);
+          return { ...a, data };
+        }),
+    };
+    const r = await confirmWith(withLanded(() => ({}), withDelegate), () => (later = true));
+    expect(r.res).toBe("OK");
+    expect(r.alerts.join("\n")).toMatch(/differs from the plain template \(delegate set\)/);
+    // A plain account: no alert. A read error: no alert, still recorded.
+    const plain = await confirmWith(withLanded(() => ({})));
+    expect(plain.res).toBe("OK");
+    expect(plain.alerts.join("\n")).not.toMatch(/template/);
+    let broken = false;
+    const failingRead = {
+      getTokenAccounts: async (owner: string) => {
+        // The build's simulation reads token accounts too; only the confirm-time read fails.
+        if (broken) throw new Error("rpc down");
+        return chain.getTokenAccounts(owner);
+      },
+    };
+    const down = await confirmWith(withLanded(() => ({}), failingRead), () => (broken = true));
+    expect(down.res).toBe("OK");
+  });
+
+  it("tokenAuthorityOps decodes compiled, partially decoded and jsonParsed Token/Token-2022 instructions", () => {
+    const ata = Keypair.generate().publicKey.toBase58();
+    const keys = ["payer", TOKEN, ata, TOKEN22, "other", "11111111111111111111111111111111"];
+    const ix = (pid: number, data: number[], accounts = [2]) => ({ programIdIndex: pid, accounts, data: bs58.encode(Buffer.from(data)) });
+    const ops = tokenAuthorityOps(
+      [
+        {
+          instructions: [
+            ix(1, [3, 1, 0, 0, 0, 0, 0, 0, 0]), // transfer: ignored
+            ix(1, [4, 1, 0, 0, 0, 0, 0, 0, 0]), // approve
+            ix(3, [13, 1, 0, 0, 0, 0, 0, 0, 0, 6]), // Token-2022 approveChecked
+            ix(1, [6, 0, 0], [4]), // setAuthority on another account
+            ix(5, [4, 0, 0, 0]), // System, not Token
+            { programId: TOKEN, accounts: [ata], data: bs58.encode(Buffer.from([9])) }, // closeAccount, partially decoded
+            { programId: TOKEN, parsed: { type: "approve", info: { source: ata, delegate: "d" } } },
+            { programId: TOKEN, parsed: { type: "transfer", info: { source: ata } } },
+            { programIdIndex: 1, accounts: [2], data: "" }, // unreadable
+          ],
+        },
+      ],
+      keys,
+    );
+    expect(ops).toEqual([
+      { type: "approve", target: ata },
+      { type: "approveChecked", target: ata },
+      { type: "setAuthority", target: "other" },
+      { type: "closeAccount", target: ata },
+      { type: "approve", target: ata },
+      { type: "unknown", target: null },
+    ]);
+    expect(() => tokenAuthorityOps(null, keys)).toThrow();
+    expect(() => tokenAuthorityOps([{ instructions: [{ programIdIndex: 99 }] }], keys)).toThrow();
+    expect(() => checkTokenAuthorityOps([{ type: "approve", target: "other" }], ata)).not.toThrow();
+    expect(() => checkTokenAuthorityOps(null, ata)).toThrow();
+  });
+
+  it("tokenAccountDrift: the plain template is null; delegate, close authority, state, native are named", () => {
+    const fresh = Buffer.alloc(165);
+    fresh[108] = 1;
+    expect(tokenAccountDrift(fresh)).toBeNull();
+    const d1 = Buffer.from(fresh);
+    d1.writeUInt32LE(1, 72);
+    d1.writeUInt32LE(1, 129);
+    expect(tokenAccountDrift(d1)).toBe("delegate set, close authority set");
+    const d2 = Buffer.from(fresh);
+    d2[108] = 2;
+    d2.writeUInt32LE(1, 109);
+    expect(tokenAccountDrift(d2)).toBe("state 2, native");
+    expect(tokenAccountDrift(Buffer.alloc(10))).toBe("short account data");
+  });
+
+  it("the real adapter decodes the landed inner Token instructions (null when they can't be read)", async () => {
+    process.env.SOLANA_RPC_URL ??= "https://rpc.example/";
+    const { Connection } = await import("@solana/web3.js");
+    const { rpcChain } = await import("@/lib/solana");
+    const payer = Keypair.generate().publicKey;
+    const ata = Keypair.generate().publicKey;
+    const message = new TransactionMessage({
+      payerKey: payer,
+      recentBlockhash: bs58.encode(Buffer.alloc(32, 9)),
+      instructions: [new TransactionInstruction({ programId: new PublicKey(TOKEN), keys: [{ pubkey: ata, isSigner: false, isWritable: true }], data: Buffer.from([3]) })],
+    }).compileToV0Message();
+    const keys = message.staticAccountKeys.map((k) => k.toBase58());
+    const inner = [{ index: 0, instructions: [{ programIdIndex: keys.indexOf(TOKEN), accounts: [keys.indexOf(ata.toBase58())], data: bs58.encode(Buffer.from([4, 1, 0, 0, 0, 0, 0, 0, 0])) }] }];
+    const tx = (innerInstructions: unknown) => ({ transaction: { message, signatures: ["s"] }, meta: { err: null, innerInstructions, preTokenBalances: [], postTokenBalances: [], postBalances: [1] } });
+    const spy = vi.spyOn(Connection.prototype, "getTransaction");
+    try {
+      spy.mockResolvedValueOnce(tx(inner) as never);
+      expect((await rpcChain.getLandedTransaction("s"))?.tokenAuthorityOps).toEqual([{ type: "approve", target: ata.toBase58() }]);
+      spy.mockResolvedValueOnce(tx(undefined) as never);
+      expect((await rpcChain.getLandedTransaction("s"))?.tokenAuthorityOps).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

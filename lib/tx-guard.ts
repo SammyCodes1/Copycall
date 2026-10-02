@@ -498,6 +498,92 @@ export function innerSystemOps(inner: unknown, accountKeys: readonly string[]): 
 }
 
 /**
+ * H-04: SPL Token / Token-2022 instructions that change who controls a token account:
+ * approve / approveChecked (delegate), setAuthority (owner or close authority), closeAccount.
+ * `target` is the token account changed. "unknown" = a Token instruction we couldn't read.
+ * Transfers, mints, burns etc. are not listed (amounts are checked elsewhere).
+ */
+export type TokenAuthorityOp = { type: string; target: string | null };
+const TOKEN_AUTH_IX: Record<number, string> = { 4: "approve", 6: "setAuthority", 9: "closeAccount", 13: "approveChecked" };
+const TOKEN_AUTH_PARSED: Record<string, string> = {
+  approve: "source",
+  approveChecked: "source",
+  setAuthority: "account",
+  closeAccount: "account",
+};
+
+/** Same input shapes as innerSystemOps (jsonParsed, partially decoded, compiled). A malformed list throws. */
+export function tokenAuthorityOps(inner: unknown, accountKeys: readonly string[]): TokenAuthorityOp[] {
+  if (!Array.isArray(inner)) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+  const out: TokenAuthorityOp[] = [];
+  for (const group of inner) {
+    const list = (group as { instructions?: unknown })?.instructions;
+    if (!Array.isArray(list)) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+    for (const ix of list as Record<string, unknown>[]) {
+      if (!ix || typeof ix !== "object") throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+      const pid =
+        ix.programId !== undefined ? String(ix.programId) : typeof ix.programIdIndex === "number" ? accountKeys[ix.programIdIndex] : undefined;
+      if (!pid) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+      if (pid !== TOKEN_PROGRAM_ID && pid !== TOKEN_2022_PROGRAM_ID) continue;
+      const parsed = ix.parsed as { type?: unknown; info?: Record<string, unknown> } | undefined;
+      if (parsed && typeof parsed === "object") {
+        const type = typeof parsed.type === "string" ? parsed.type : "";
+        if (!(type in TOKEN_AUTH_PARSED)) continue;
+        const target = parsed.info?.[TOKEN_AUTH_PARSED[type]];
+        out.push(typeof target === "string" ? { type, target } : { type: "unknown", target: null });
+        continue;
+      }
+      let data: Buffer;
+      try {
+        data = Buffer.from(bs58.decode(String(ix.data ?? "")));
+      } catch {
+        out.push({ type: "unknown", target: null });
+        continue;
+      }
+      if (data.length < 1) {
+        out.push({ type: "unknown", target: null });
+        continue;
+      }
+      const type = TOKEN_AUTH_IX[data[0]];
+      if (!type) continue;
+      const raw = Array.isArray(ix.accounts) ? (ix.accounts as unknown[])[0] : undefined;
+      const target = typeof raw === "number" ? accountKeys[raw] : typeof raw === "string" ? raw : undefined;
+      out.push(target ? { type, target } : { type: "unknown", target: null });
+    }
+  }
+  return out;
+}
+
+/**
+ * H-04: F-02 at confirm, on the landed tx. Refuse a delegate, authority change or close of the
+ * user's USDC account. An unreadable Token instruction is "unknown" (TOKEN_UNKNOWN: retry, not fine).
+ * null = the RPC didn't say: fail closed.
+ */
+export function checkTokenAuthorityOps(ops: readonly TokenAuthorityOp[] | null | undefined, usdcAta: string): void {
+  if (!ops) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't verify the token instructions this transaction runs");
+  for (const op of ops) {
+    if (op.type === "unknown") throw new TxRejected("TOKEN_UNKNOWN", "Couldn't read a token instruction in this transaction");
+    if (op.target === usdcAta)
+      throw new TxRejected("USDC_AUTHORITY", `Transaction would ${op.type} on your USDC account`);
+  }
+}
+
+/**
+ * H-04: how a token account's bytes differ from the plain template (no delegate, Initialized,
+ * no close authority, not wrapped SOL), or null if they don't. For alerts only.
+ */
+export function tokenAccountDrift(data: Buffer): string | null {
+  if (data.length < TOKEN_ACCOUNT_LEN) return "short account data";
+  const drift: string[] = [];
+  if (data.readUInt32LE(72) !== 0) drift.push("delegate set");
+  if (data[108] !== 1) drift.push(`state ${data[108]}`);
+  if (data.readUInt32LE(109) !== 0) drift.push("native");
+  if (data.readBigUInt64LE(121) !== 0n) drift.push("delegated amount");
+  if (data.readUInt32LE(129) !== 0) drift.push("close authority set");
+  return drift.length ? drift.join(", ") : null;
+}
+
+/**
  * F-01: refuse any inner System instruction that assigns, allocates or creates the
  * user's wallet (the "owner change" drainer), and any System instruction we can't
  * classify. Transfers and account creation for OTHER accounts (e.g. the ATA program

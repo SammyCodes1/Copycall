@@ -311,6 +311,7 @@ export function createMockChain(): MockChain {
       payerUsdcOutBase,
       innerPrograms: inner,
       innerSystemOps: sysOps,
+      tokenAuthorityOps: [], // the mock programs never approve, re-authorize or close accounts
       payerPostLamports: state.lamports.has(keys[0]) ? Number(state.lamports.get(keys[0])) : null,
     });
     return signature;
@@ -406,6 +407,7 @@ export function createMockChain(): MockChain {
             payerUsdcOutBase: t.payerUsdcOutBase ?? null,
             innerPrograms: t.innerPrograms ?? null,
             innerSystemOps: t.innerSystemOps ?? null,
+            tokenAuthorityOps: t.tokenAuthorityOps ?? null,
             payerPostLamports: t.payerPostLamports ?? null,
           }
         : null;

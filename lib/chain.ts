@@ -4,7 +4,7 @@
  *  - lib/mock/chain-mock.ts (MOCK_PANTA=true and tests; an in-memory ledger)
  */
 import type { VersionedMessage } from "@solana/web3.js";
-import type { ChainReader, InnerSystemOp } from "./tx-guard";
+import type { ChainReader, InnerSystemOp, TokenAuthorityOp } from "./tx-guard";
 
 export type LandedTx = {
   err: unknown | null;
@@ -19,6 +19,8 @@ export type LandedTx = {
   innerPrograms?: string[] | null;
   /** Inner System instructions (F-01). null if unknown. */
   innerSystemOps?: InnerSystemOp[] | null;
+  /** H-04: inner Token delegate/authority/close instructions. null if unknown. */
+  tokenAuthorityOps?: TokenAuthorityOp[] | null;
   /** J-07: the fee payer's lamports right after this tx (meta.postBalances[0]). null if unknown. */
   payerPostLamports?: number | null;
 };

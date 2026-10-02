@@ -10,7 +10,7 @@ import "server-only";
 import { Connection, PublicKey, type ConfirmedSignatureInfo, type VersionedTransaction } from "@solana/web3.js";
 import { SendError, type Chain, type ConfirmationState } from "./chain";
 import { payerUsdcOutFromMeta } from "./landed";
-import { innerProgramIds, innerSystemOps, type InnerSystemOp } from "./tx-guard";
+import { innerProgramIds, innerSystemOps, tokenAuthorityOps, type InnerSystemOp, type TokenAuthorityOp } from "./tx-guard";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "./solana-constants";
 import creatorsJson from "@/fixtures/creators.json";
 import { isMockMode, requireEnv } from "./env";
@@ -256,12 +256,15 @@ export const rpcChain: Chain = {
     const payerUsdcOutBase = payer ? payerUsdcOutFromMeta(tx.meta, allKeys, payer) : null;
     let innerPrograms: string[] | null = null;
     let systemOps: InnerSystemOp[] | null = null;
+    let tokenOps: TokenAuthorityOp[] | null = null;
     try {
       innerPrograms = innerProgramIds(tx.meta?.innerInstructions, allKeys);
       systemOps = innerSystemOps(tx.meta?.innerInstructions, allKeys);
+      tokenOps = tokenAuthorityOps(tx.meta?.innerInstructions, allKeys);
     } catch {
       innerPrograms = null;
       systemOps = null;
+      tokenOps = null;
     }
     return {
       err: tx.meta?.err ?? null,
@@ -270,6 +273,7 @@ export const rpcChain: Chain = {
       payerUsdcOutBase,
       innerPrograms,
       innerSystemOps: systemOps,
+      tokenAuthorityOps: tokenOps,
       payerPostLamports: typeof tx.meta?.postBalances?.[0] === "number" ? tx.meta.postBalances[0] : null,
     };
   },

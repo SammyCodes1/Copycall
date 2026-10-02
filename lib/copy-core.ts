@@ -48,6 +48,7 @@ import {
   SYSTEM_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  associatedTokenAddress,
   usdcToBase,
 } from "./solana-constants";
 import {
@@ -71,6 +72,9 @@ import {
   checkInnerSystemOps,
   checkInstructions,
   innerSystemOps,
+  tokenAuthorityOps,
+  checkTokenAuthorityOps,
+  tokenAccountDrift,
   checkLandedPrograms,
   checkMessageShape,
   invokedPrograms,
@@ -1136,20 +1140,22 @@ async function verifyAndRecord(
     d.log?.(`${kind} confirm: no inner System instructions for ${signature.slice(0, 8)}…`);
     throw verifyUnavailable(order.id, signature);
   }
+  const usdcAta = associatedTokenAddress(owner.wallet);
+  const topLevel = [
+    {
+      instructions: landed.message.compiledInstructions.map((ci) => ({
+        programIdIndex: ci.programIdIndex,
+        accounts: [...ci.accountKeyIndexes],
+        data: bs58.encode(ci.data),
+      })),
+    },
+  ];
+  const staticKeys = landed.message.staticAccountKeys.map((k) => k.toBase58());
   let topLevelOps: ReturnType<typeof innerSystemOps>;
+  let topLevelTokenOps: ReturnType<typeof tokenAuthorityOps>;
   try {
-    topLevelOps = innerSystemOps(
-      [
-        {
-          instructions: landed.message.compiledInstructions.map((ci) => ({
-            programIdIndex: ci.programIdIndex,
-            accounts: [...ci.accountKeyIndexes],
-            data: bs58.encode(ci.data),
-          })),
-        },
-      ],
-      landed.message.staticAccountKeys.map((k) => k.toBase58()),
-    );
+    topLevelOps = innerSystemOps(topLevel, staticKeys);
+    topLevelTokenOps = tokenAuthorityOps(topLevel, staticKeys);
   } catch {
     throw verifyUnavailable(order.id, signature);
   }
@@ -1157,6 +1163,7 @@ async function verifyAndRecord(
     // Top level: the message is hash-bound to the one we built and checked, so this should never
     // trip; if it does (e.g. an account we can't resolve), keep it pending with an alert, never fail.
     checkInnerSystemOps(topLevelOps, owner.wallet);
+    checkTokenAuthorityOps(topLevelTokenOps, usdcAta);
   } catch (err) {
     alertOnce(d, `toplevel:${order.id}`, `${kind} confirm: top-level System check ${err instanceof TxRejected ? err.code : "error"} for ${signature.slice(0, 8)}…; not recorded yet`);
     throw verifyUnavailable(order.id, signature);
@@ -1167,6 +1174,27 @@ async function verifyAndRecord(
     const code = err instanceof TxRejected ? err.code : "WALLET_OWNER";
     (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
       `${kind} confirm ${code} for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…): not recorded`,
+    );
+    await d.copy.failOrder(order.id);
+    asRejection(err);
+  }
+  // H-04: F-02 at confirm, on what actually ran. The simulation proved no CPI set a delegate,
+  // changed an authority or closed the user's USDC account; a program that branches on slot or
+  // clock could still do it on chain. Seen in the landed inner instructions -> refused + alert.
+  if (landed.tokenAuthorityOps === undefined || landed.tokenAuthorityOps === null) {
+    d.log?.(`${kind} confirm: no inner token instructions for ${signature.slice(0, 8)}…`);
+    throw verifyUnavailable(order.id, signature);
+  }
+  try {
+    checkTokenAuthorityOps(landed.tokenAuthorityOps, usdcAta);
+  } catch (err) {
+    const code = err instanceof TxRejected ? err.code : "USDC_AUTHORITY";
+    if (code === "TOKEN_UNKNOWN") {
+      alertOnce(d, `token-unknown:${order.id}`, `${kind} confirm TOKEN_UNKNOWN for ${signature.slice(0, 8)}…: an unreadable token instruction; not recorded yet`);
+      throw verifyUnavailable(order.id, signature);
+    }
+    (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
+      `${kind} confirm ${code} for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…): the landed tx changed control of the USDC account; not recorded`,
     );
     await d.copy.failOrder(order.id);
     asRejection(err);
@@ -1207,6 +1235,16 @@ async function verifyAndRecord(
     throw moved > limit
       ? new AuthError(422, "OVER_LIMIT", "This transaction moved more USDC than you approved. It was not recorded.")
       : new AuthError(422, "PAYOUT_TOO_LOW", "This claim didn't pay your winnings to your wallet. It was not recorded.");
+  }
+  // H-04 (auditor's suggestion), detection only: the USDC account as it is NOW. It may differ
+  // because of something the user did later, so this never blocks the record; it alerts once.
+  try {
+    const now = (await d.chain.getTokenAccounts(owner.wallet)).find((a) => a.pubkey === usdcAta);
+    const drift = now ? tokenAccountDrift(Buffer.from(now.data)) : null;
+    if (drift)
+      alertOnce(d, `ata-drift:${order.id}`, `${kind} confirm ${signature.slice(0, 8)}…: the USDC account now differs from the plain template (${drift}); recorded, check it`);
+  } catch {
+    d.log?.(`${kind} confirm: couldn't read the USDC account for ${signature.slice(0, 8)}… (alert-only check skipped)`);
   }
   // Atomic in the DB (complete_order locks the row; UNIQUE order_id / signature back it up).
   let result = await d.copy.completeOrder(order.id, owner.uid, signature, { allowFailed: revive });
