@@ -70,7 +70,7 @@ import {
   checkInnerPrograms,
   checkInnerSystemOps,
   checkInstructions,
-  checkWalletAccount,
+  innerSystemOps,
   checkLandedPrograms,
   checkMessageShape,
   invokedPrograms,
@@ -1034,6 +1034,15 @@ async function maybeResend(d: FlowDeps, order: PendingOrder, signature: string):
   }
 }
 
+/** J-07: an alert at most once per key per process (the sweep re-checks every run). */
+const alerted = new Set<string>();
+function alertOnce(d: FlowDeps, key: string, m: string): void {
+  if (alerted.has(key)) return;
+  if (alerted.size > 10_000) alerted.clear();
+  alerted.add(key);
+  (d.alert ?? ((x: string) => console.error(`[ALERT] ${x}`)))(m);
+}
+
 /** VERIFY_UNAVAILABLE carries what the client needs to keep checking (E-02). */
 function verifyUnavailable(orderId: string, signature: string): AuthError {
   return new AuthError(502, "VERIFY_UNAVAILABLE", "We couldn't verify the transaction yet. We'll keep checking.", {
@@ -1117,37 +1126,53 @@ async function verifyAndRecord(
     await d.copy.failOrder(order.id);
     asRejection(err);
   }
-  // F-01: no inner System instruction assigned, allocated or created the wallet, and the
-  // wallet is still a plain System account now.
+  // F-01 / J-07: the wallet as of the LANDED slot, not now. No System instruction in this tx
+  // (inner, or top level) assigned, allocated or created the wallet, so its owner and data are
+  // what they were before the tx; and the runtime only lets a System-owned account with no data
+  // pay fees, which it did. It existed after the tx iff meta.postBalances[0] > 0. What the user
+  // does with the wallet later (e.g. emptying it) is not this copy's business.
   if (landed.innerSystemOps === undefined || landed.innerSystemOps === null) {
     d.log?.(`${kind} confirm: no inner System instructions for ${signature.slice(0, 8)}…`);
     throw verifyUnavailable(order.id, signature);
   }
-  let walletNow: Awaited<ReturnType<Chain["getWalletAccount"]>>;
+  let topLevelOps: ReturnType<typeof innerSystemOps>;
   try {
-    walletNow = await d.chain.getWalletAccount(owner.wallet);
+    topLevelOps = innerSystemOps(
+      [
+        {
+          instructions: landed.message.compiledInstructions.map((ci) => ({
+            programIdIndex: ci.programIdIndex,
+            accounts: [...ci.accountKeyIndexes],
+            data: bs58.encode(ci.data),
+          })),
+        },
+      ],
+      landed.message.staticAccountKeys.map((k) => k.toBase58()),
+    );
   } catch {
     throw verifyUnavailable(order.id, signature);
   }
   try {
     checkInnerSystemOps(landed.innerSystemOps, owner.wallet);
-    if (walletNow === null) {
-      // H-01: no wallet account now (e.g. drained to 0 after landing): we can't tell it wasn't
-      // re-owned and closed, so never record it as fine. Retryable, with an alert.
-      (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
-        `${kind} confirm WALLET_MISSING for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…): not recorded yet`,
-      );
-      throw verifyUnavailable(order.id, signature);
-    }
-    checkWalletAccount(walletNow);
+    checkInnerSystemOps(topLevelOps, owner.wallet);
   } catch (err) {
-    if (err instanceof AuthError) throw err;
     const code = err instanceof TxRejected ? err.code : "WALLET_OWNER";
     (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
       `${kind} confirm ${code} for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…): not recorded`,
     );
     await d.copy.failOrder(order.id);
     asRejection(err);
+  }
+  const post = landed.payerPostLamports;
+  if (post === undefined || post === null) {
+    d.log?.(`${kind} confirm: no post balances for ${signature.slice(0, 8)}…`);
+    throw verifyUnavailable(order.id, signature);
+  }
+  if (!(post > 0)) {
+    // The tx itself left the wallet at 0 lamports (closed). Unknown, never "fine": kept pending
+    // (not failed: it landed), alerted once per order.
+    alertOnce(d, `wallet-closed:${order.id}`, `${kind} confirm WALLET_MISSING for ${signature.slice(0, 8)}…: the landed tx left the wallet at 0 lamports; not recorded yet`);
+    throw verifyUnavailable(order.id, signature);
   }
 
   // D-03 / B3-03: what actually moved, from the landed transaction's own token balances.

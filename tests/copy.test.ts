@@ -1683,12 +1683,42 @@ describe("F-01: the wallet stays a plain System account (no Assign/Allocate, eve
     expect(() => checkWalletAccount(null)).toThrow(/wallet/);
   });
 
-  it("H-01 confirm: no wallet account now is never recorded as fine (retryable, alerted, order kept)", async () => {
-    const r = await confirmWith(landedWith(() => ({}), async () => null));
+  it("J-09 simulation: a wallet entry without lamports is a clean 422 refusal (not a TypeError/500)", async () => {
+    const r = await buildWith(
+      simWith((s) => ({
+        ...s,
+        accounts: s.accounts.map((a, i) => (i === 0 && a ? ({ ...a, lamports: undefined } as unknown as typeof a) : a)),
+      })),
+    );
+    expect(r).toMatchObject({ res: "TX_REJECTED", orders: 0 });
+    expect(r.log).toContain("SIMULATION_ACCOUNTS");
+  });
+
+  it("J-07: the auditor's PoF: the wallet emptied (gone) AFTER the copy landed -> recorded; the landed post-state decides", async () => {
+    let reads = 0;
+    const r = await confirmWith(landedWith(() => ({}), async () => (reads++, null)));
+    expect(r.res).toBe("OK");
+    expect(r.state.copies.size).toBe(1);
+    expect(reads).toBe(0); // the current state is never consulted
+    expect(r.alerts.join("\n")).not.toContain("WALLET_MISSING");
+  });
+
+  it("J-07: the landed tx itself left the wallet at 0 lamports, or post balances are missing -> retryable, never recorded or failed; alerted once", async () => {
+    const closed = landedWith(() => ({ payerPostLamports: 0 }));
+    const r = await confirmWith(closed);
     expect(r.res).toBe("VERIFY_UNAVAILABLE");
     expect(r.state.copies.size).toBe(0);
     expect(r.state.orders.get(r.b.orderId)?.status).toBe("pending");
-    expect(r.alerts.join("\n")).toContain("WALLET_MISSING");
+    expect(r.alerts.filter((m) => m.includes("WALLET_MISSING")).length).toBe(1);
+    // The sweep re-checks it: no second alert for the same order, and never failed (it landed).
+    const alerts: string[] = [];
+    const later = deps({ state: r.state, chain: closed, alert: (m) => alerts.push(m), nowMs: () => Date.now() + 2 * 60_000 });
+    for (let i = 0; i < 3; i++) await sweepBroadcastOrders(later);
+    expect(alerts.filter((m) => m.includes("WALLET_MISSING"))).toEqual([]);
+    expect(r.state.orders.get(r.b.orderId)?.status).toBe("pending");
+    const unknown = await confirmWith(landedWith(() => ({ payerPostLamports: null })));
+    expect(unknown.res).toBe("VERIFY_UNAVAILABLE");
+    expect(unknown.state.orders.get(unknown.b.orderId)?.status).toBe("pending");
   });
 
   it("confirm: a landed Assign of the wallet fails the order, records nothing and alerts", async () => {
@@ -1699,15 +1729,16 @@ describe("F-01: the wallet stays a plain System account (no Assign/Allocate, eve
     expect(r.alerts.join("\n")).toContain("WALLET_OWNER");
   });
 
-  it("confirm: a wallet now owned by another program is refused; unknown System ops stay retryable", async () => {
+  it("J-07: a wallet re-owned LATER (not by this tx) doesn't un-record the copy; unknown System ops stay retryable", async () => {
+    // This tx has no Assign/Allocate/Create of the wallet (inner or top level), so the owner at the
+    // landed slot is what the runtime required of the fee payer: System. Later changes are not this tx.
     const owned = await confirmWith(landedWith(() => ({}), async () => ({ owner: attacker(), executable: false, dataLength: 0 })));
-    expect(owned.res).toBe("TX_REJECTED");
-    expect(owned.state.copies.size).toBe(0);
+    expect(owned.res).toBe("OK");
     const unknown = await confirmWith(landedWith(() => ({ innerSystemOps: null })));
     expect(unknown.res).toBe("VERIFY_UNAVAILABLE");
     expect(unknown.state.orders.get(unknown.b.orderId)?.status).toBe("pending");
     const rpcDown = await confirmWith(landedWith(() => ({}), async () => Promise.reject(new Error("rpc down"))));
-    expect(rpcDown.res).toBe("VERIFY_UNAVAILABLE");
+    expect(rpcDown.res).toBe("OK"); // no current-state read any more
   });
 });
 
@@ -3002,5 +3033,25 @@ describe("Addendum I/J: an order is failed only when provably dead (no trace AND
       expect(state.orders.get(bad.orderId)?.status).toBe("pending");
       expect(alerts.join("\n")).toMatch(/couldn't be failed/);
     });
+  });
+});
+
+describe("J-07: the real adapter reads the payer's post-tx lamports from meta.postBalances[0]", () => {
+  it("present -> the number; missing -> null (unknown, retryable)", async () => {
+    process.env.SOLANA_RPC_URL ??= "https://rpc.example/";
+    const { Connection } = await import("@solana/web3.js");
+    const { rpcChain } = await import("@/lib/solana");
+    const payer = Keypair.generate().publicKey;
+    const message = new TransactionMessage({ payerKey: payer, recentBlockhash: bs58.encode(Buffer.alloc(32, 9)), instructions: [] }).compileToV0Message();
+    const tx = (meta: Record<string, unknown>) => ({ transaction: { message, signatures: ["s"] }, meta: { err: null, innerInstructions: [], preTokenBalances: [], postTokenBalances: [], ...meta } });
+    const spy = vi.spyOn(Connection.prototype, "getTransaction");
+    try {
+      spy.mockResolvedValueOnce(tx({ postBalances: [123, 0] }) as never);
+      expect((await rpcChain.getLandedTransaction("s"))?.payerPostLamports).toBe(123);
+      spy.mockResolvedValueOnce(tx({}) as never);
+      expect((await rpcChain.getLandedTransaction("s"))?.payerPostLamports).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

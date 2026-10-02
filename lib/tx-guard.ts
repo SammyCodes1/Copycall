@@ -654,6 +654,9 @@ export async function simulateAndCheck(
   if (!walletAfter) throw new TxRejected("SIMULATION_ACCOUNTS", "Simulation didn't return your wallet account");
   if (typeof walletAfter.owner !== "string" || typeof walletAfter.executable !== "boolean")
     throw new TxRejected("SIMULATION_ACCOUNTS", "Simulation didn't return your wallet's owner");
+  // J-09: a missing/odd lamports value is a clean refusal, not a TypeError (500).
+  if (typeof walletAfter.lamports !== "number" || !Number.isSafeInteger(walletAfter.lamports) || walletAfter.lamports < 0)
+    throw new TxRejected("SIMULATION_ACCOUNTS", "Simulation didn't return your wallet's balance");
   checkWalletAccount({ ...walletAfter, dataLength: walletAfter.data.length });
   const lamportsSpent = BigInt(lamportsBefore) - BigInt(walletAfter.lamports);
   if (lamportsSpent > MAX_SOL_SPEND_LAMPORTS) throw new TxRejected("SOL_SPEND", "Transaction spends too much SOL");
