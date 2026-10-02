@@ -98,6 +98,12 @@ try {
   out(c.model === "no_fee" ? "suggest: fee was 0, so this quote can't tell; try a larger --amount" : "suggest: do NOT pin from this quote; try another market or a larger --amount");
   process.exit(2);
 } catch (err) {
-  const e = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  // P1-5: also Panta's error code (and field), only in their strict printable shapes; still redacted.
+  let e;
+  try {
+    e = (await load("lib/panta-error.ts")).describeError(err);
+  } catch {
+    e = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  }
   fail(e);
 }

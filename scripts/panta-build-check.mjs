@@ -252,7 +252,13 @@ try {
   printCommon(r);
   finish(r);
 } catch (err) {
-  const e = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  // P1-5: also Panta's error code (and field), only in their strict printable shapes; still redacted.
+  let e;
+  try {
+    e = (await load("lib/panta-error.ts")).describeError(err);
+  } catch {
+    e = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  }
   fail(e);
 }
 

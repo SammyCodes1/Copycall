@@ -20,6 +20,7 @@ import type {
   QuoteResponse,
 } from "./schemas";
 import { MAX_SLIPPAGE_BPS } from "./schemas";
+import { describeError } from "./panta-error";
 import { USDC_MINT, TOKEN_PROGRAM_ID, associatedTokenAddress } from "./solana-constants";
 import {
   PANTA_ACCOUNT_ROLES,
@@ -233,7 +234,7 @@ export async function runBuildCheck(o: BuildCheckOptions, deps: BuildCheckDeps):
       report.failed = `${err.check}: ${err.code}`;
       report.checks.push({ name: err.check, ok: false, detail: `${err.code}: ${err.message}` });
     } else {
-      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      const msg = describeError(err);
       report.failed = `error: ${msg}`;
       report.checks.push({ name: "error", ok: false, detail: msg });
     }
@@ -414,7 +415,7 @@ export async function runClaimCheck(o: ClaimCheckOptions, deps: ClaimCheckDeps):
       report.failed = `${err.check}: ${err.code}`;
       report.checks.push({ name: err.check, ok: false, detail: `${err.code}: ${err.message}` });
     } else {
-      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      const msg = describeError(err);
       report.failed = `error: ${msg}`;
       report.checks.push({ name: "error", ok: false, detail: msg });
     }
