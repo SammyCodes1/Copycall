@@ -1825,9 +1825,12 @@ describe("F-04: the shipped client re-checks by signature after a lost response,
       },
     });
     const { b, sig, first } = await signedFirst(d, u);
-    const r = await confirmOrder(d, post("/c", first, u), "copy");
+    const alerts: string[] = [];
+    const r = await confirmOrder({ ...d, alert: (m) => alerts.push(m) }, post("/c", first, u), "copy");
     expect(r).toMatchObject({ status: "confirmed", signature: sig });
     expect(state.copies.size).toBe(1);
+    // H-02: the revive of a concurrently failed order is alerted (the fail reason isn't stored).
+    expect(alerts.join("\n")).toMatch(/revived concurrently failed order .* cap 1000/);
     // The revivable codes carry the signature in the JSON body.
     const body = await authErrorResponse(
       new AuthError(409, "ORDER_NOT_PENDING", "x", { orderId: b.orderId, signature: sig, revivable: true }),

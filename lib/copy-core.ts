@@ -1130,6 +1130,11 @@ async function verifyAndRecord(
     const now = await d.copy.getPendingOrder(order.id);
     if (now?.status === "failed") {
       d.log?.(`${kind} confirm: order failed concurrently; reviving verified ${signature.slice(0, 8)}…`);
+      // H-02: we don't store why it was failed. If another instance refused it under different
+      // limits (e.g. MAX_STAKE_USDC skew during a deploy), a human should see this record.
+      (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
+        `${kind} confirm revived concurrently failed order ${order.id.slice(0, 8)} (${signature.slice(0, 8)}…, moved ${usdcExact(moved < 0n ? 0n : moved)} USDC, this instance's cap ${d.maxStakeCapBase === null ? "unset" : usdcExact(d.maxStakeCapBase)})`,
+      );
       result = await d.copy.completeOrder(order.id, owner.uid, signature, { allowFailed: true });
     }
   }
