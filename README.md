@@ -165,6 +165,14 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    `node --env-file=.env.local scripts/panta-fee-model.mjs --market <marketId> --side yes [--amount 5.00]`.
    It prints the quote, both predictions and `detected: inclusive|on_top|ambiguous|unknown`, and exits 2 when
    nothing should be pinned. In mock: `MOCK_PANTA=true [MOCK_PANTA_FEE_MODEL=on_top] node scripts/panta-fee-model.mjs`.
+   **Check a real build before any wallet signs** (build and simulate only; no private key, nothing is signed
+   or sent): `node --env-file=.env.local scripts/panta-build-check.mjs --market <marketId> --side yes|no
+   --amount 5.00 --wallet <pubkey> [--slippage-bps 200]`. It runs the app's quote logic, one build, assembles the
+   exact transaction, `simulateTransaction` with `sigVerify: false`, and the full guard, then prints the fee
+   model, the decoded order args, each Panta account slot against `PANTA_ACCOUNT_ROLES`, the inner programs and
+   the simulated USDC delta. `--amount` is at most 5. Exit 0 = every check passed, 3 = a check failed (named),
+   1 = usage/config error. The Panta key and every part of `SOLANA_RPC_URL` are redacted from all output.
+   Needs `PANTA_API_KEY`, `PANTA_FEE_MODEL`, `PANTA_PROGRAM_IDS` and `SOLANA_RPC_URL`; in mock: `MOCK_PANTA=true`.
 
    **Order arguments** are decoded strictly against an *assumed* layout (`PRIMARY_ORDER_LAYOUT` in
    `lib/tx-guard.ts`, 27 bytes: discriminator, amount u64, side u8, shares u64, max slippage u16 bps; Panta
