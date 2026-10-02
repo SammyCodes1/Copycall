@@ -4,15 +4,32 @@ import "server-only";
  * rethrown as generic messages so no SQL or row data leaks.
  */
 import type { CompleteResult, CopyStore, PendingOrder, RecordedClaim, RecordedCopy, ReportJob } from "./copy-store";
-import { toMicro, usdcExact } from "./copy-math";
+import { usdcExact } from "./copy-math";
 import { getDb } from "./db";
 import type { TradeSide } from "./trades";
 
 const iso = (sec: number) => new Date(sec * 1000).toISOString();
 const sec = (v: string) => Math.floor(Date.parse(v) / 1000);
-const dec = (v: string | number, dp: number) => Number(v).toFixed(dp);
-/** numeric(18,6) -> exact USDC text ("5.00", "4.995"), via base units. */
-const exact = (v: string | number) => usdcExact(toMicro(Number(v).toFixed(6)));
+/**
+ * E-01: numerics are read as TEXT (`col::text` in every select) and parsed in
+ * integer base units, never through a float or 2-dp rounding:
+ * "9.996000" -> 9_996_000n -> "9.996". Anything that isn't an exact decimal
+ * string fails closed.
+ */
+const NUMERIC_TEXT = /^\d{1,18}(?:\.\d{1,6})?$/;
+function exactBase(v: unknown): bigint {
+  if (typeof v !== "string" || !NUMERIC_TEXT.test(v)) fail("non-exact numeric");
+  const [w, f = ""] = v.split(".");
+  return BigInt(w) * 1_000_000n + BigInt(f.padEnd(6, "0"));
+}
+/** numeric -> exact text ("5.00", "4.995", "9.996"), via base units. */
+const exact = (v: unknown) => usdcExact(exactBase(v));
+
+/** pending_orders columns, numerics cast to text. */
+const ORDER_COLS =
+  "id, user_id, wallet, kind, leader_trade_id, market_id, side, amount_usdc::text, fee_usdc::text, fee_model, " +
+  "max_usdc_out::text, shares::text, quote_id, panta_order_id, message_hash, message_base64, " +
+  "last_valid_block_height::text, created_at, expires_at, status, signature";
 
 function fail(what: string): never {
   throw new Error(`Database error: ${what}`);
@@ -51,16 +68,19 @@ function toOrder(r: OrderRow): PendingOrder {
     leaderTradeId: r.leader_trade_id,
     marketId: r.market_id,
     side: r.side,
-    amountUsdc: dec(r.amount_usdc, 2),
-    feeUsdc: dec(r.fee_usdc, 2),
+    amountUsdc: exact(r.amount_usdc),
+    feeUsdc: exact(r.fee_usdc),
     feeModel: r.fee_model ?? null,
-    maxUsdcOut: r.max_usdc_out === null || r.max_usdc_out === undefined ? null : dec(r.max_usdc_out, 6),
-    shares: dec(r.shares, 2),
+    maxUsdcOut: r.max_usdc_out === null || r.max_usdc_out === undefined ? null : exact(r.max_usdc_out),
+    shares: exact(r.shares),
     quoteId: r.quote_id,
     pantaOrderId: r.panta_order_id,
     messageHash: r.message_hash,
     messageBase64: r.message_base64,
-    lastValidBlockHeight: r.last_valid_block_height === null ? null : Number(r.last_valid_block_height),
+    lastValidBlockHeight:
+      r.last_valid_block_height === null || r.last_valid_block_height === undefined
+        ? null
+        : Number(exactBase(String(r.last_valid_block_height)) / 1_000_000n),
     createdAt: sec(r.created_at),
     expiresAt: sec(r.expires_at),
     status: r.status,
@@ -111,15 +131,15 @@ export const supabaseCopyStore: CopyStore = {
         created_at: iso(o.createdAt),
         expires_at: iso(o.expiresAt),
       })
-      .select("*")
+      .select(ORDER_COLS)
       .single();
     if (error || !data) fail("create pending order");
-    return toOrder(data as OrderRow);
+    return toOrder(data as unknown as OrderRow);
   },
   async getPendingOrder(id) {
-    const { data, error } = await getDb().from("pending_orders").select("*").eq("id", id).maybeSingle();
+    const { data, error } = await getDb().from("pending_orders").select(ORDER_COLS).eq("id", id).maybeSingle();
     if (error) fail("get pending order");
-    return data ? toOrder(data as OrderRow) : null;
+    return data ? toOrder(data as unknown as OrderRow) : null;
   },
   async signatureUsed(signature) {
     const db = getDb();
@@ -198,7 +218,7 @@ export const supabaseCopyStore: CopyStore = {
   async listCopies(userId, limit) {
     const { data, error } = await getDb()
       .from("copies")
-      .select("id, leader_trade_id, market_id, side, amount_usdc, fee_usdc, shares, signature, status, created_at")
+      .select("id, leader_trade_id, market_id, side, amount_usdc::text, fee_usdc::text, shares::text, signature, status, created_at")
       .eq("user_id", userId)
       .in("status", ["confirmed", "reported"])
       .order("created_at", { ascending: false })
@@ -211,7 +231,7 @@ export const supabaseCopyStore: CopyStore = {
       side: r.side,
       amountUsdc: exact(r.amount_usdc), // D-04: exact debit, not rounded to cents
       feeUsdc: r.fee_usdc === null || r.fee_usdc === undefined ? null : exact(r.fee_usdc),
-      shares: dec(r.shares ?? 0, 2),
+      shares: r.shares === null || r.shares === undefined ? "0.00" : exact(r.shares),
       signature: r.signature,
       status: r.status,
       createdAt: sec(r.created_at),
@@ -220,7 +240,7 @@ export const supabaseCopyStore: CopyStore = {
   async listClaims(userId, limit) {
     const { data, error } = await getDb()
       .from("claims")
-      .select("id, market_id, side, shares, signature, created_at")
+      .select("id, market_id, side, shares::text, signature, created_at")
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(limit);
@@ -229,7 +249,7 @@ export const supabaseCopyStore: CopyStore = {
       id: r.id,
       marketId: r.market_id,
       side: r.side,
-      shares: dec(r.shares, 2),
+      shares: exact(r.shares),
       signature: r.signature,
       createdAt: sec(r.created_at),
     }));
