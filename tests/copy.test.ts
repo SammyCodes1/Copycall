@@ -5,7 +5,8 @@
  */
 import bs58 from "bs58";
 import nacl from "tweetnacl";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Keypair, TransactionInstruction, TransactionMessage, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { GET as quoteRoute } from "@/app/api/copy/[tradeId]/quote/route";
@@ -2389,7 +2390,7 @@ describe("H-03: a 5xx before broadcast is resolved, never left polling a transac
     }
   });
 
-  it("5xx twice: one re-post, then NOT_BROADCAST ends it at once (no 31 polls, no rate limit), 'Nothing was spent'", async () => {
+  it("5xx twice: one re-post, then NOT_BROADCAST ends it at once (no 31 polls, no rate limit); not failed, so never 'Nothing was spent' (J-02)", async () => {
     const u = await signedInUser();
     const state = createCopyMemoryState();
     const d = deps({ state, copy: flaky(state, 2) });
@@ -2398,7 +2399,7 @@ describe("H-03: a 5xx before broadcast is resolved, never left polling a transac
     try {
       await expect(pollConfirm(w.postFn, b.orderId, first, async () => {}, sig)).rejects.toMatchObject({
         code: "NOT_BROADCAST",
-        message: expect.stringMatching(/Nothing was spent/),
+        message: expect.stringMatching(/couldn't confirm your transaction was sent\. Check your wallet/),
       });
       expect(w.bodies.length).toBe(3);
       expect(w.bodies[2]).toEqual({ orderId: b.orderId, signature: sig });
@@ -2512,6 +2513,180 @@ describe("Addendum I/J: an order is failed only when provably dead (no trace AND
     const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64")).signatures[0]);
     return { b, sig, first: { orderId: b.orderId, signedTransaction } };
   };
+
+  /** I-04 / J-01: a second VALID signature over the same message (random nonce, canonical S). */
+  const secondSignature = (msg: Uint8Array, secretKey: Uint8Array): Uint8Array => {
+    const e = ed25519.utils.getExtendedPublicKey(secretKey.slice(0, 32));
+    const L = ed25519.Point.Fn.ORDER;
+    const le = (b: Uint8Array) => b.reduceRight((x, v) => (x << 8n) | BigInt(v), 0n);
+    const r = le(randomBytes(64)) % L;
+    const R = ed25519.Point.BASE.multiply(r).toBytes();
+    const k = le(createHash("sha512").update(Buffer.concat([R, e.pointBytes, msg])).digest()) % L;
+    let S = (r + k * e.scalar) % L;
+    const out = new Uint8Array(64);
+    out.set(R);
+    for (let i = 32; i < 64; i++) {
+      out[i] = Number(S & 255n);
+      S >>= 8n;
+    }
+    return out;
+  };
+  const withSig = (signedTransaction: string, sig: Uint8Array) => {
+    const tx = VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64"));
+    tx.signatures[0] = sig;
+    return Buffer.from(tx.serialize()).toString("base64");
+  };
+  /** A send that is accepted but doesn't land (yet). */
+  const quiet = (sends: Uint8Array[]) => ({
+    ...chain,
+    send: async (raw: Uint8Array) => (sends.push(raw), bs58.encode(VersionedTransaction.deserialize(raw).signatures[0])),
+  });
+
+  describe("I-04 / J-01: a signature that isn't the broadcast one never fails the order or gets broadcast", () => {
+    it("the auditor's PoF: sig1 broadcast and landed, a 2nd valid signature after expiry -> the stored one is looked up and recorded", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const sends: Uint8Array[] = [];
+      const d = deps({ state, chain: quiet(sends) });
+      const { b, sig, first } = await signed(d, u);
+      expect((await confirmOrder(d, post("/c", first, u), "copy")).status).toBe("pending");
+      await chain.send(sends[0]); // sig1 lands (relayed)
+      const msg = VersionedTransaction.deserialize(Buffer.from(first.signedTransaction, "base64")).message.serialize();
+      const sig2 = secondSignature(msg, u.secretKey);
+      expect(nacl.sign.detached.verify(msg, sig2, bs58.decode(u.wallet))).toBe(true);
+      expect(bs58.encode(sig2)).not.toBe(sig);
+      const late = deps({ state, chain: { ...quiet(sends), isBlockhashValid: async () => false }, nowMs: () => Date.now() + 5 * 60_000 });
+      const r = await confirmOrder(late, post("/c", { orderId: b.orderId, signedTransaction: withSig(first.signedTransaction, sig2) }, u), "copy");
+      expect(r).toMatchObject({ status: "confirmed", signature: sig });
+      expect(sends.length).toBe(1);
+    });
+
+    it("before expiry, a 2nd valid signature's bytes are never broadcast (no different bytes), the order stays pending", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const sends: Uint8Array[] = [];
+      const d = deps({ state, chain: quiet(sends) });
+      const { b, sig, first } = await signed(d, u);
+      await confirmOrder(d, post("/c", first, u), "copy");
+      const msg = VersionedTransaction.deserialize(Buffer.from(first.signedTransaction, "base64")).message.serialize();
+      const other = withSig(first.signedTransaction, secondSignature(msg, u.secretKey));
+      const r = await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: other }, u), "copy");
+      expect(r).toMatchObject({ status: "pending", signature: sig });
+      // Every send is the original signed bytes (the lookup may re-send THOSE, bounded).
+      expect(sends.every((x) => Buffer.from(x).equals(Buffer.from(first.signedTransaction, "base64")))).toBe(true);
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    });
+
+    it("a random signature on a never-broadcast order can't fail it, even with the blockhash provably expired", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const { b } = await signed(deps({ state }), u);
+      const dead = deps({ state, chain: { ...chain, isBlockhashValid: async () => false } });
+      const junk = bs58.encode(Buffer.alloc(64, 3));
+      expect(await code(confirmOrder(dead, post("/c", { orderId: b.orderId, signature: junk }, u), "copy"))).toBe("TX_REJECTED");
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    });
+  });
+
+  describe("J-02: 'Nothing was spent' only once the order is failed (fenced), and noteBroadcast gates the send", () => {
+    /** Request A stalls in signatureUsed (after reading the order, before noteBroadcast). */
+    const stalling = (state: CopyMemoryState) => {
+      const store = createMemoryCopyStore(state);
+      let release!: () => void;
+      let enter!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const entered = new Promise<void>((r) => (enter = r));
+      let first = true;
+      return {
+        release: () => release(),
+        entered,
+        copy: {
+          ...store,
+          signatureUsed: async (sig: string) => {
+            if (first) {
+              first = false;
+              enter();
+              await gate;
+            }
+            return store.signatureUsed(sig);
+          },
+        },
+      };
+    };
+
+    it("the auditor's PoF: while A is stalled, a poll gets NOT_BROADCAST without 'nothing was spent'; A then sends once and records", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const st = stalling(state);
+      const sends: Uint8Array[] = [];
+      const d = deps({ state, copy: st.copy, chain: { ...chain, send: async (r: Uint8Array) => (sends.push(r), chain.send(r)) } });
+      const { b, sig, first } = await signed(d, u);
+      const a = confirmOrder(d, post("/c", first, u), "copy");
+      const late = deps({ state, nowMs: () => Date.now() + 5 * 60_000 });
+      const e = await confirmOrder(late, post("/c", { orderId: b.orderId, signature: sig }, u), "copy").catch((x) => x);
+      expect(e).toMatchObject({ code: "NOT_BROADCAST" });
+      expect(e.message).not.toMatch(/nothing was (spent|sent)/i);
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+      st.release();
+      expect((await a).status).toBe("confirmed");
+      expect(sends.length).toBe(1);
+      expect(state.copies.size).toBe(1);
+    });
+
+    it("once provably dead the order is failed BEFORE 'nothing was spent', and the stalled request is fenced: 0 sends", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const st = stalling(state);
+      const sends: Uint8Array[] = [];
+      const d = deps({ state, copy: st.copy, chain: { ...chain, send: async (r: Uint8Array) => (sends.push(r), chain.send(r)) } });
+      const { b, sig, first } = await signed(d, u);
+      const a = confirmOrder(d, post("/c", first, u), "copy");
+      const dead = deps({ state, chain: { ...chain, isBlockhashValid: async () => false } });
+      const e = await confirmOrder(dead, post("/c", { orderId: b.orderId, signature: sig }, u), "copy").catch((x) => x);
+      expect(e).toMatchObject({ code: "NOT_BROADCAST", message: expect.stringMatching(/nothing was spent/) });
+      expect(state.orders.get(b.orderId)?.status).toBe("failed");
+      st.release();
+      expect(await code(a)).toBe("ORDER_NOT_PENDING");
+      expect(sends.length).toBe(0);
+      expect(state.orders.get(b.orderId)?.broadcastSignature).toBeNull();
+    });
+
+    it("a stalled request that resumes after the quote expired never starts a send", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const st = stalling(state);
+      const sends: Uint8Array[] = [];
+      let skew = 0;
+      const d = deps({
+        state,
+        copy: st.copy,
+        nowMs: () => Date.now() + skew,
+        chain: { ...chain, send: async (r: Uint8Array) => (sends.push(r), chain.send(r)) },
+      });
+      const { first } = await signed(d, u);
+      const a = confirmOrder(d, post("/c", first, u), "copy");
+      await st.entered; // A passed the first expiry check and is stalled before noteBroadcast
+      skew = 5 * 60_000;
+      st.release();
+      const e = await a.catch((x) => x);
+      expect(e).toMatchObject({ code: "QUOTE_EXPIRED" });
+      expect(e.message).not.toMatch(/nothing was (spent|sent)/i);
+      expect(sends.length).toBe(0);
+    });
+
+    it("noteBroadcast reports whether this signature is the stored one on a pending order", async () => {
+      const state = createCopyMemoryState();
+      const store = createMemoryCopyStore(state);
+      const u = await signedInUser();
+      const { b } = await signed(deps({ state }), u);
+      expect(await store.noteBroadcast(b.orderId, "S1")).toBe(true);
+      expect(await store.noteBroadcast(b.orderId, "S1")).toBe(true);
+      expect(await store.noteBroadcast(b.orderId, "S2")).toBe(false);
+      await store.failOrder(b.orderId);
+      expect(await store.noteBroadcast(b.orderId, "S1")).toBe(false);
+      expect(await store.noteBroadcast("nope", "S1")).toBe(false);
+    });
+  });
 
   describe("I-01: send errors are classified by the JSON-RPC code, never by web3.js's 'Simulation failed'", () => {
     const classify = async (error: unknown) => {

@@ -172,13 +172,24 @@ export const supabaseCopyStore: CopyStore = {
     if (error) fail("fail order");
   },
   async noteBroadcast(orderId, signature) {
-    const { error } = await getDb()
+    const db = getDb();
+    const { data, error } = await db
       .from("pending_orders")
       .update({ broadcast_signature: signature })
       .eq("id", orderId)
       .eq("status", "pending")
-      .is("broadcast_signature", null);
+      .is("broadcast_signature", null)
+      .select("id");
     if (error) fail("note broadcast");
+    if ((data ?? []).length === 1) return true;
+    // J-02: nothing written. Fine only if it's still pending with this very signature stored.
+    const { data: row, error: e2 } = await db
+      .from("pending_orders")
+      .select("status, broadcast_signature")
+      .eq("id", orderId)
+      .maybeSingle();
+    if (e2) fail("note broadcast");
+    return row?.status === "pending" && row?.broadcast_signature === signature;
   },
   async claimBroadcastSweep(p) {
     const db = getDb();

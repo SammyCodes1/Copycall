@@ -96,8 +96,12 @@ export interface CopyStore {
     opts?: { allowFailed?: boolean },
   ): Promise<CompleteResult>;
   failOrder(orderId: string): Promise<void>;
-  /** E-02: remember the signature we are about to broadcast (pending orders only, first one wins). */
-  noteBroadcast(orderId: string, signature: string): Promise<void>;
+  /**
+   * E-02: remember the signature we are about to broadcast (pending orders only, first one wins).
+   * J-02: true only if the order is pending and its stored broadcast signature is now THIS one
+   * (written here, or already equal). Callers must not send otherwise.
+   */
+  noteBroadcast(orderId: string, signature: string): Promise<boolean>;
   /**
    * G-02: claim up to `limit` pending orders with a broadcast signature, created in
    * (createdAfter, createdBefore) and swept fewer than `maxAttempts` times, least recently

@@ -811,17 +811,33 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     signature = bs58.encode(tx.signatures[0]);
     if (order.broadcastSignature === signature) {
       // E-02: already broadcast once; never say "Nothing was sent" now. Just look it up again.
+    } else if (order.broadcastSignature !== null) {
+      // I-04 / J-01: a second valid signature over the same message. Never broadcast different
+      // bytes and never fail the order over it: look up the signature we did broadcast.
+      d.log?.(`${kind} confirm: a different signature for broadcast order ${order.id.slice(0, 8)}; checking the stored one`);
+      signature = order.broadcastSignature;
     } else if (now > order.expiresAt) {
       // H-03: never broadcast by us and past the quote, so we won't send it now. Settle it from the
-      // chain (it may have been sent some other way): fail it only once it can no longer land.
+      // chain (it may have been sent some other way): fail it only once it is provably dead.
       const r = await resolveUnbroadcast(d, order, signature);
-      if (r !== "landed") throw quoteExpired("Quote expired, refresh. Nothing was sent.");
+      if (r === "expired") throw quoteExpired("Quote expired, refresh. Nothing was sent.");
+      // J-02: not failed, so another request may still send it: don't claim nothing was spent.
+      if (r === "pending") throw quoteExpired("Quote expired, refresh. If you already sent this copy, check your wallet first.");
       // It landed after all: verified and recorded below like any other.
     } else {
       if (await d.copy.signatureUsed(signature))
         throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
+      // J-02: a request stalled above must not start a send once the quote is over.
+      if (nowSec(d) > order.expiresAt) throw quoteExpired("Quote expired, refresh. If you already sent this copy, check your wallet first.");
       // E-02: remember the signature BEFORE broadcasting, so a lost response can still be confirmed.
-      await d.copy.noteBroadcast(order.id, signature);
+      // J-02: and send ONLY if this request's signature is the one stored on a pending order (an
+      // order failed in the meantime, e.g. provably dead, is fenced: nothing is sent).
+      if (!(await d.copy.noteBroadcast(order.id, signature)))
+        throw new AuthError(409, "ORDER_NOT_PENDING", "This order was already handled", {
+          orderId: order.id,
+          signature,
+          revivable: true,
+        });
       await broadcastWithRetry(d, order, tx, signature);
       justSent = true;
     }
@@ -836,18 +852,22 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
       throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
     if (!revive && order.broadcastSignature === null) {
       // H-03: we never broadcast this order (e.g. a 5xx before the send). Don't poll for a
-      // transaction nobody sent: say so, and fail the order once it can no longer land.
-      const r = await resolveUnbroadcast(d, order, signature);
+      // transaction nobody sent: say so, and fail the order only once it is provably dead.
+      // I-04: only a signature over THIS order's message by this wallet may fail it.
+      const own = signsOrder(order, signature, session.w);
+      const r = await resolveUnbroadcast(d, order, signature, own);
+      if (r !== "landed" && !own) throw rejected("that signature isn't for this transaction");
       if (r === "expired")
-        throw new AuthError(409, "NOT_BROADCAST", "This transaction was never sent, so nothing was spent. Start again.");
+        throw new AuthError(409, "NOT_BROADCAST", "This transaction was never sent and can no longer land, so nothing was spent. Start again.");
       if (r === "pending") {
+        // J-02: NOT failed, so an earlier request may still send it. Never "nothing was spent" here.
         const canSend = now <= order.expiresAt;
         throw new AuthError(
           409,
           "NOT_BROADCAST",
           canSend
             ? "This transaction hasn't been sent yet."
-            : "This transaction was never sent and the quote expired, so nothing was spent. Start again.",
+            : "We couldn't confirm your transaction was sent. Check your wallet before trying again.",
           { orderId: order.id, resend: canSend },
         );
       }
@@ -884,6 +904,7 @@ async function resolveUnbroadcast(
   d: FlowDeps,
   order: PendingOrder,
   signature: string,
+  mayFail = true,
 ): Promise<"landed" | "expired" | "pending"> {
   try {
     const state = await d.chain.waitForConfirmation(signature, order.lastValidBlockHeight, 0, blockhashOf(order) ?? undefined);
@@ -892,10 +913,19 @@ async function resolveUnbroadcast(
   } catch {
     return "pending"; // RPC trouble: never fail an order on a guess
   }
-  if (!(await provablyDead(d, order, signature))) return "pending";
+  if (!mayFail || !(await provablyDead(d, order, signature))) return "pending";
   await d.copy.failOrder(order.id);
   d.log?.(`${order.kind} ${order.id.slice(0, 8)}: never broadcast and expired; failed`);
   return "expired";
+}
+
+/** I-04: `signature` is the wallet's Ed25519 signature over the order's stored message. */
+function signsOrder(order: PendingOrder, signature: string, wallet: string): boolean {
+  try {
+    return nacl.sign.detached.verify(Buffer.from(order.messageBase64, "base64"), bs58.decode(signature), bs58.decode(wallet));
+  } catch {
+    return false;
+  }
 }
 
 /** G-03: how many times one order's signed bytes may be broadcast in total. */

@@ -90,7 +90,8 @@ export type ConfirmStep = Confirmed | { status: "pending"; signature: string };
  *  - QUOTE_EXPIRED / ORDER_NOT_PENDING carrying a signature: the server failed the order, but
  *    it may still have landed; the revive path re-verifies it on chain (at most REVIVE_TRIES);
  *  - H-03: after a lost response or 5xx, or NOT_BROADCAST with `resend`, the same signed bytes are
- *    posted again (at most RESEND_TRIES); NOT_BROADCAST otherwise is final ("nothing was spent").
+ *    posted again (at most RESEND_TRIES); NOT_BROADCAST otherwise is final. Only a server that
+ *    failed the order (provably dead) says "nothing was spent" (J-02).
  * At most CONFIRM_POLLS checks in total. If we give up, the server's cron sweep still records
  * pending orders.
  */
@@ -128,7 +129,8 @@ export async function pollConfirm(
       if (err.code === "NOT_BROADCAST")
         throw new FlowError(
           "NOT_BROADCAST",
-          err.resend ? "We couldn't send your transaction. Nothing was spent. Please try again." : err.message,
+          // J-02: the server didn't fail the order, so an earlier request may still have sent it.
+          err.resend ? "We couldn't confirm your transaction was sent. Check your wallet before trying again." : err.message,
         );
       if (err.code === "QUOTE_EXPIRED" && err.signature)
         throw new FlowError("QUOTE_EXPIRED", "The transaction expired before it landed. Nothing was spent. Refresh and try again.");

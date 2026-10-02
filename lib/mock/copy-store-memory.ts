@@ -124,7 +124,9 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
     },
     async noteBroadcast(orderId, signature) {
       const o = s.orders.get(orderId);
-      if (o && o.status === "pending" && o.broadcastSignature === null) o.broadcastSignature = signature;
+      if (!o || o.status !== "pending") return false;
+      if (o.broadcastSignature === null) o.broadcastSignature = signature;
+      return o.broadcastSignature === signature;
     },
     async claimBroadcastSweep(p) {
       const due = [...s.orders.values()]
