@@ -1154,8 +1154,15 @@ async function verifyAndRecord(
     throw verifyUnavailable(order.id, signature);
   }
   try {
-    checkInnerSystemOps(landed.innerSystemOps, owner.wallet);
+    // Top level: the message is hash-bound to the one we built and checked, so this should never
+    // trip; if it does (e.g. an account we can't resolve), keep it pending with an alert, never fail.
     checkInnerSystemOps(topLevelOps, owner.wallet);
+  } catch (err) {
+    alertOnce(d, `toplevel:${order.id}`, `${kind} confirm: top-level System check ${err instanceof TxRejected ? err.code : "error"} for ${signature.slice(0, 8)}…; not recorded yet`);
+    throw verifyUnavailable(order.id, signature);
+  }
+  try {
+    checkInnerSystemOps(landed.innerSystemOps, owner.wallet);
   } catch (err) {
     const code = err instanceof TxRejected ? err.code : "WALLET_OWNER";
     (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
