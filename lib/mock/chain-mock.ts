@@ -27,7 +27,7 @@ import {
   USDC_MINT,
   associatedTokenAddress,
 } from "../solana-constants";
-import { anchorDiscriminator, type AccountSnapshot, type SimulationResult } from "../tx-guard";
+import { anchorDiscriminator, type AccountSnapshot, type InnerSystemOp, type SimulationResult } from "../tx-guard";
 
 /** Fake program id used in mock instructions (never a real program). */
 export const MOCK_PROGRAM_ID = "MockPanta1111111111111111111111111111111111";
@@ -111,7 +111,7 @@ class MockTxError extends Error {
 }
 
 /** Run a message against a ledger (mutates it). Throws MockTxError on failure. */
-function execute(l: Ledger, message: VersionedMessage, inner: string[] = []): void {
+function execute(l: Ledger, message: VersionedMessage, inner: string[] = [], sysOps: InnerSystemOp[] = []): void {
   const decoded = TransactionMessage.decompile(message);
   const payer = decoded.payerKey.toBase58();
   let cuPrice = 0n;
@@ -131,6 +131,7 @@ function execute(l: Ledger, message: VersionedMessage, inner: string[] = []): vo
       const ata = key(1);
       if (!l.tokens.has(ata)) {
         inner.push(SYSTEM_PROGRAM_ID);
+        sysOps.push({ type: "createAccount", target: ata }); // like the real ATA program's System CPI
         l.tokens.set(ata, { mint: key(3), owner: key(2), amount: 0n });
         debitLamports(l, key(0), TOKEN_ACCOUNT_RENT, i);
       }
@@ -280,8 +281,9 @@ export function createMockChain(): MockChain {
     const next = cloneLedger(state);
     let err: unknown = null;
     const inner: string[] = [];
+    const sysOps: InnerSystemOp[] = [];
     try {
-      execute(next, message, inner);
+      execute(next, message, inner, sysOps);
       state.tokens = next.tokens;
       state.lamports = next.lamports;
       state.positions = next.positions;
@@ -301,6 +303,7 @@ export function createMockChain(): MockChain {
       simulated,
       payerUsdcOutBase,
       innerPrograms: inner,
+      innerSystemOps: sysOps,
     });
     return signature;
   }
@@ -330,25 +333,31 @@ export function createMockChain(): MockChain {
     async simulate(tx: VersionedTransaction, addresses: string[]): Promise<SimulationResult> {
       const next = cloneLedger(state);
       const inner: string[] = [];
+      const sysOps: InnerSystemOp[] = [];
       try {
-        execute(next, tx.message, inner);
+        execute(next, tx.message, inner, sysOps);
       } catch (e) {
         return {
           err: { InstructionError: [(e as MockTxError).index, (e as MockTxError).reason] },
           logs: [],
           accounts: [],
           innerPrograms: inner,
+          innerSystemOps: sysOps,
         };
       }
       return {
         err: null,
         logs: ["Program log: mock simulation"],
         innerPrograms: inner,
+        innerSystemOps: sysOps,
         accounts: addresses.map((a) => {
           const t = next.tokens.get(a);
-          if (t) return { data: encodeTokenAccount(t), lamports: Number(TOKEN_ACCOUNT_RENT) };
+          if (t)
+            return { data: encodeTokenAccount(t), lamports: Number(TOKEN_ACCOUNT_RENT), owner: TOKEN_PROGRAM_ID, executable: false };
           const lamports = next.lamports.get(a);
-          return lamports === undefined ? null : { data: Buffer.alloc(0), lamports: Number(lamports) };
+          return lamports === undefined
+            ? null
+            : { data: Buffer.alloc(0), lamports: Number(lamports), owner: SYSTEM_PROGRAM_ID, executable: false };
         }),
       };
     },
@@ -380,8 +389,14 @@ export function createMockChain(): MockChain {
             // E-11: unknown stays unknown (fail closed), like the real RPC.
             payerUsdcOutBase: t.payerUsdcOutBase ?? null,
             innerPrograms: t.innerPrograms ?? null,
+            innerSystemOps: t.innerSystemOps ?? null,
           }
         : null;
+    },
+
+    async getWalletAccount(address) {
+      // The mock never re-owns accounts: a funded wallet is a plain System account.
+      return state.lamports.has(address) ? { owner: SYSTEM_PROGRAM_ID, executable: false, dataLength: 0 } : null;
     },
 
     async simulateSignAndSend(messageBytes) {

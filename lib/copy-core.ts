@@ -67,7 +67,9 @@ import {
   TxRejected,
   assembleTransaction,
   checkInnerPrograms,
+  checkInnerSystemOps,
   checkInstructions,
+  checkWalletAccount,
   checkLandedPrograms,
   checkMessageShape,
   invokedPrograms,
@@ -848,6 +850,29 @@ async function verifyAndRecord(
     checkInnerPrograms(landed.innerPrograms, d.pantaProgramIds);
   } catch (err) {
     d.log?.(`ALERT ${kind} confirm UNEXPECTED_CPI for ${signature.slice(0, 8)}…`);
+    await d.copy.failOrder(order.id);
+    asRejection(err);
+  }
+  // F-01: no inner System instruction assigned, allocated or created the wallet, and the
+  // wallet is still a plain System account now.
+  if (landed.innerSystemOps === undefined || landed.innerSystemOps === null) {
+    d.log?.(`${kind} confirm: no inner System instructions for ${signature.slice(0, 8)}…`);
+    throw verifyUnavailable(order.id, signature);
+  }
+  let walletNow: Awaited<ReturnType<Chain["getWalletAccount"]>>;
+  try {
+    walletNow = await d.chain.getWalletAccount(owner.wallet);
+  } catch {
+    throw verifyUnavailable(order.id, signature);
+  }
+  try {
+    checkInnerSystemOps(landed.innerSystemOps, owner.wallet);
+    checkWalletAccount(walletNow);
+  } catch (err) {
+    const code = err instanceof TxRejected ? err.code : "WALLET_OWNER";
+    (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
+      `${kind} confirm ${code} for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…): not recorded`,
+    );
     await d.copy.failOrder(order.id);
     asRejection(err);
   }

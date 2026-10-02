@@ -10,7 +10,7 @@ import "server-only";
 import { Connection, PublicKey, type ConfirmedSignatureInfo, type VersionedTransaction } from "@solana/web3.js";
 import type { Chain, ConfirmationState } from "./chain";
 import { payerUsdcOutFromMeta } from "./landed";
-import { innerProgramIds } from "./tx-guard";
+import { innerProgramIds, innerSystemOps, type InnerSystemOp } from "./tx-guard";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "./solana-constants";
 import creatorsJson from "@/fixtures/creators.json";
 import { isMockMode, requireEnv } from "./env";
@@ -130,13 +130,23 @@ export const rpcChain: Chain = {
     } catch {
       innerPrograms = null; // unreadable: the guard fails closed
     }
+    let systemOps: InnerSystemOp[] | null = null;
+    try {
+      systemOps = innerSystemOps(res.value.innerInstructions, tx.message.staticAccountKeys.map((k) => k.toBase58()));
+    } catch {
+      systemOps = null;
+    }
     return {
       err: res.value.err ?? null,
       logs: res.value.logs ?? [],
+      // F-01: owner and executable come back with every account (base64 encoding).
       accounts: (res.value.accounts ?? []).map((a) =>
-        a ? { data: Buffer.from(a.data[0], "base64"), lamports: a.lamports } : null,
+        a
+          ? { data: Buffer.from(a.data[0], "base64"), lamports: a.lamports, owner: String(a.owner), executable: a.executable === true }
+          : null,
       ),
       innerPrograms,
+      innerSystemOps: systemOps,
     };
   },
 
@@ -183,10 +193,13 @@ export const rpcChain: Chain = {
     // E-03: attributed row by row; anything unattributable is null (fail closed), never 0.
     const payerUsdcOutBase = payer ? payerUsdcOutFromMeta(tx.meta, allKeys, payer) : null;
     let innerPrograms: string[] | null = null;
+    let systemOps: InnerSystemOp[] | null = null;
     try {
       innerPrograms = innerProgramIds(tx.meta?.innerInstructions, allKeys);
+      systemOps = innerSystemOps(tx.meta?.innerInstructions, allKeys);
     } catch {
       innerPrograms = null;
+      systemOps = null;
     }
     return {
       err: tx.meta?.err ?? null,
@@ -194,6 +207,12 @@ export const rpcChain: Chain = {
       signatures: tx.transaction.signatures,
       payerUsdcOutBase,
       innerPrograms,
+      innerSystemOps: systemOps,
     };
+  },
+
+  async getWalletAccount(address) {
+    const info = await getConnection().getAccountInfo(new PublicKey(address), "confirmed");
+    return info ? { owner: info.owner.toBase58(), executable: info.executable, dataLength: info.data.length } : null;
   },
 };

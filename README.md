@@ -136,6 +136,10 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    the v0 transaction, and simulates it with inner instructions (USDC decrease ≤ max stake, other token accounts
    unchanged, SOL spend ≤ 0.02, every CPI target in {Panta, Token, Token-2022, ATA, System}; missing inner
    instructions fail closed). The landed transaction's CPIs are checked again at confirm.
+   **Wallet account (F-01):** the simulation returns each account's owner and executable flag; the wallet must
+   stay System-owned, non-executable and data-less, and no inner System instruction may Assign, Allocate or
+   Create the wallet (unclassifiable System instructions, e.g. nonce ops, are refused). Confirm re-checks the
+   landed inner System instructions and the wallet's current owner; a violation fails the order and alerts.
    The fee must match the quote. The exact bytes are stored as a pending order (90 s).
    **Fee model:** the max stake is the hard total, fee included, and the guard's cap is the stake itself in every
    model (5.00 approved = 5.00 cap, no fee or slippage headroom). Panta's docs don't say whether the quoted fee is

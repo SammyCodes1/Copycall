@@ -10,6 +10,7 @@
  * Pure module: no RPC and no env. Chain access is injected (see ChainReader).
  */
 import { createHash } from "node:crypto";
+import bs58 from "bs58";
 import {
   PublicKey,
   TransactionInstruction,
@@ -402,6 +403,116 @@ export function innerProgramIds(inner: unknown, accountKeys: readonly string[]):
   return out;
 }
 
+/**
+ * F-01: inner (CPI) System instructions, decoded. `target` is the account whose
+ * owner, data or existence the instruction changes (null for plain transfers).
+ */
+export type InnerSystemOp = { type: string; target: string | null };
+
+// System instruction tags (u32 LE) -> name and the index of the account it changes.
+const SYSTEM_IX: Record<number, [string, number | null]> = {
+  0: ["createAccount", 1],
+  1: ["assign", 0],
+  2: ["transfer", null],
+  3: ["createAccountWithSeed", 1],
+  8: ["allocate", 0],
+  9: ["allocateWithSeed", 0],
+  10: ["assignWithSeed", 0],
+  11: ["transferWithSeed", null],
+};
+// jsonParsed names -> the info field holding the changed account.
+const SYSTEM_PARSED: Record<string, string | null> = {
+  createAccount: "newAccount",
+  createAccountWithSeed: "newAccount",
+  assign: "account",
+  assignWithSeed: "account",
+  allocate: "account",
+  allocateWithSeed: "account",
+  transfer: null,
+  transferWithSeed: null,
+};
+
+/**
+ * Inner System instructions from an RPC response. Handles the jsonParsed shape
+ * ({program: "system", parsed: {type, info}}), the partially decoded shape
+ * ({programId, accounts: base58[], data: base58}) and the compiled shape
+ * ({programIdIndex, accounts: index[], data: base58}). Any System instruction we
+ * can't read, or of another type (nonce, upgrade...), comes back as type
+ * "unknown": the check refuses it. A malformed list throws (fail closed).
+ */
+export function innerSystemOps(inner: unknown, accountKeys: readonly string[]): InnerSystemOp[] {
+  if (!Array.isArray(inner)) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+  const out: InnerSystemOp[] = [];
+  for (const group of inner) {
+    const list = (group as { instructions?: unknown })?.instructions;
+    if (!Array.isArray(list)) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+    for (const ix of list as Record<string, unknown>[]) {
+      if (!ix || typeof ix !== "object") throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+      const pid =
+        ix.programId !== undefined ? String(ix.programId) : typeof ix.programIdIndex === "number" ? accountKeys[ix.programIdIndex] : undefined;
+      if (!pid) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+      if (pid !== SYSTEM_PROGRAM_ID) continue;
+      const parsed = ix.parsed as { type?: unknown; info?: Record<string, unknown> } | undefined;
+      if (parsed && typeof parsed === "object") {
+        const type = typeof parsed.type === "string" ? parsed.type : "";
+        if (!(type in SYSTEM_PARSED)) {
+          out.push({ type: "unknown", target: null });
+          continue;
+        }
+        const field = SYSTEM_PARSED[type];
+        const target = field === null ? null : parsed.info?.[field];
+        if (field !== null && typeof target !== "string") out.push({ type: "unknown", target: null });
+        else out.push({ type, target: field === null ? null : String(target) });
+        continue;
+      }
+      let data: Buffer;
+      try {
+        data = Buffer.from(bs58.decode(String(ix.data ?? "")));
+      } catch {
+        out.push({ type: "unknown", target: null });
+        continue;
+      }
+      const spec = data.length >= 4 ? SYSTEM_IX[data.readUInt32LE(0)] : undefined;
+      if (!spec || !Array.isArray(ix.accounts)) {
+        out.push({ type: "unknown", target: null });
+        continue;
+      }
+      const [type, at] = spec;
+      if (at === null) {
+        out.push({ type, target: null });
+        continue;
+      }
+      const raw = (ix.accounts as unknown[])[at];
+      const target = typeof raw === "number" ? accountKeys[raw] : typeof raw === "string" ? raw : undefined;
+      out.push(target ? { type, target } : { type: "unknown", target: null });
+    }
+  }
+  return out;
+}
+
+/**
+ * F-01: refuse any inner System instruction that assigns, allocates or creates the
+ * user's wallet (the "owner change" drainer), and any System instruction we can't
+ * classify. Transfers and account creation for OTHER accounts (e.g. the ATA program
+ * creating the user's USDC account) are fine; their SOL cost is capped separately.
+ * null = the RPC didn't say: fail closed.
+ */
+export function checkInnerSystemOps(ops: readonly InnerSystemOp[] | null | undefined, wallet: string): void {
+  if (!ops) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't verify the System instructions this transaction runs");
+  for (const op of ops) {
+    if (op.type === "unknown") throw new TxRejected("SYSTEM_CPI", "Transaction runs an unexpected System instruction");
+    if (op.target === wallet)
+      throw new TxRejected("WALLET_OWNER", `Transaction would ${op.type} your wallet account`);
+  }
+}
+
+/** F-01: the wallet must stay a plain System account: System-owned, not executable, no data. */
+export function checkWalletAccount(a: { owner: string; executable: boolean; dataLength: number } | null): void {
+  if (!a) return; // a drained wallet is caught by the SOL limit; nothing to re-own
+  if (a.owner !== SYSTEM_PROGRAM_ID || a.executable || a.dataLength !== 0)
+    throw new TxRejected("WALLET_OWNER", "Transaction changes your wallet account's owner or data");
+}
+
 /** Throws unless every inner (CPI) program is allowlisted. null = the RPC didn't say: fail closed. */
 export function checkInnerPrograms(programs: readonly string[] | null | undefined, pantaProgramIds: ReadonlySet<string>) {
   if (!programs) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't verify the programs this transaction calls");
@@ -428,13 +539,17 @@ export function checkLandedPrograms(message: VersionedMessage, pantaProgramIds: 
 // ---------------------------------------------------------------- simulation
 
 export type AccountSnapshot = { pubkey: string; data: Buffer; lamports: number };
+/** Post-simulation account state. owner and executable are required (F-01). */
+export type SimulatedAccount = { data: Buffer; lamports: number; owner: string; executable: boolean };
 export type SimulationResult = {
   err: unknown | null;
   logs: string[];
   /** Post-state, in the order of the addresses passed in; null = account doesn't exist. */
-  accounts: ({ data: Buffer; lamports: number } | null)[];
+  accounts: (SimulatedAccount | null)[];
   /** Programs reached through CPI during the simulation (B3-04). null = unknown, which fails closed. */
   innerPrograms: string[] | null;
+  /** Inner System instructions (F-01). null = unknown, which fails closed. */
+  innerSystemOps: InnerSystemOp[] | null;
 };
 
 /** What the guard needs from chain (real RPC or the mock chain). */
@@ -480,6 +595,8 @@ export type SimulationCheck = {
  *  - the USDC account keeps its owner, delegate and close authority (only the amount may change)
  *  - no other user-owned token account changes at all
  *  - SOL spent stays under MAX_SOL_SPEND_LAMPORTS
+ *  - F-01: the wallet stays System-owned, non-executable, with no data, and no inner
+ *    System instruction assigns, allocates or creates it
  */
 export async function simulateAndCheck(
   chain: ChainReader,
@@ -506,8 +623,13 @@ export async function simulateAndCheck(
   if (sim.accounts.length !== addresses.length)
     throw new TxRejected("SIMULATION_ACCOUNTS", "Simulation returned the wrong accounts");
   checkInnerPrograms(sim.innerPrograms, pantaProgramIds); // B3-04
+  checkInnerSystemOps(sim.innerSystemOps, wallet); // F-01: no Assign/Allocate/Create of the wallet
 
   const walletAfter = sim.accounts[0];
+  // F-01: the wallet stays System-owned, non-executable and data-less.
+  if (walletAfter && (typeof walletAfter.owner !== "string" || typeof walletAfter.executable !== "boolean"))
+    throw new TxRejected("SIMULATION_ACCOUNTS", "Simulation didn't return your wallet's owner");
+  checkWalletAccount(walletAfter ? { ...walletAfter, dataLength: walletAfter.data.length } : null);
   const lamportsSpent = BigInt(lamportsBefore) - BigInt(walletAfter?.lamports ?? 0);
   if (lamportsSpent > MAX_SOL_SPEND_LAMPORTS) throw new TxRejected("SOL_SPEND", "Transaction spends too much SOL");
 

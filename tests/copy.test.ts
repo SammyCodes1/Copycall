@@ -6,7 +6,7 @@
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Keypair, TransactionInstruction, TransactionMessage, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { GET as quoteRoute } from "@/app/api/copy/[tradeId]/quote/route";
 import { POST as buildRoute } from "@/app/api/copy/[tradeId]/build/route";
@@ -39,6 +39,8 @@ import { copyAmounts, totalWithFeeShort } from "@/lib/copy-math";
 import * as panta from "@/lib/panta";
 import { USDC_MINT, associatedTokenAddress, baseToUsdc, usdcToBase } from "@/lib/solana-constants";
 import type { StoredTrade } from "@/lib/data-store";
+import type { LandedTx } from "@/lib/chain";
+import { checkInnerSystemOps, innerSystemOps, type SimulationResult } from "@/lib/tx-guard";
 import { apiRequest, signedInUser } from "./helpers/session";
 
 let trade: StoredTrade;
@@ -1507,5 +1509,159 @@ describe("E-09: a missing fee config only blocks quote and build", () => {
     const b = await buildClaimTx(off, post("/cb", { marketId: win.marketId }, u));
     const req = post("/cc", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
     expect(await confirmOrder(off, req, "claim")).toMatchObject({ status: "confirmed" });
+  });
+});
+
+describe("F-01: the wallet stays a plain System account (no Assign/Allocate, even via CPI)", () => {
+  const SYSTEM = "11111111111111111111111111111111";
+  const attacker = () => Keypair.generate().publicKey.toBase58();
+  const u32 = (n: number, extra = 0) => {
+    const b = Buffer.alloc(4 + extra);
+    b.writeUInt32LE(n, 0);
+    return bs58.encode(b);
+  };
+
+  it("parses inner System instructions in the jsonParsed, partially decoded and compiled shapes", () => {
+    const w = attacker();
+    const keys = [w, SYSTEM, attacker()];
+    const parsed = [{ index: 0, instructions: [{ program: "system", programId: SYSTEM, parsed: { type: "assign", info: { account: w, owner: keys[2] } } }] }];
+    expect(innerSystemOps(parsed, keys)).toEqual([{ type: "assign", target: w }]);
+    const partial = [{ index: 0, instructions: [{ programId: SYSTEM, accounts: [w], data: u32(8, 8) }] }];
+    expect(innerSystemOps(partial, keys)).toEqual([{ type: "allocate", target: w }]);
+    const compiled = [{ index: 0, instructions: [{ programIdIndex: 1, accounts: [0], data: u32(10, 40) }] }];
+    expect(innerSystemOps(compiled, keys)).toEqual([{ type: "assignWithSeed", target: w }]);
+    const create = [{ index: 0, instructions: [{ programIdIndex: 1, accounts: [2, 0], data: u32(0, 48) }] }];
+    expect(innerSystemOps(create, keys)).toEqual([{ type: "createAccount", target: w }]);
+    const nonce = [{ index: 0, instructions: [{ programIdIndex: 1, accounts: [0], data: u32(6) }] }];
+    expect(innerSystemOps(nonce, keys)).toEqual([{ type: "unknown", target: null }]);
+    const transfer = [{ index: 0, instructions: [{ programIdIndex: 1, accounts: [0, 2], data: u32(2, 8) }] }];
+    expect(innerSystemOps(transfer, keys)).toEqual([{ type: "transfer", target: null }]);
+    expect(() => innerSystemOps(null, keys)).toThrow();
+    expect(() => innerSystemOps([{ instructions: [null] }], keys)).toThrow();
+  });
+
+  it("checkInnerSystemOps refuses ops on the wallet and unknown System ops; other accounts are fine", () => {
+    const w = attacker();
+    for (const type of ["assign", "allocate", "assignWithSeed", "allocateWithSeed", "createAccount", "createAccountWithSeed"])
+      expect(() => checkInnerSystemOps([{ type, target: w }], w)).toThrow(/wallet/);
+    expect(() => checkInnerSystemOps([{ type: "unknown", target: null }], w)).toThrow();
+    expect(() => checkInnerSystemOps(null, w)).toThrow();
+    expect(() => checkInnerSystemOps([{ type: "createAccount", target: attacker() }, { type: "transfer", target: null }], w)).not.toThrow();
+  });
+
+  /** Build a copy against a simulation whose results are rewritten. */
+  const simWith = (rewrite: (r: SimulationResult, addresses: string[]) => SimulationResult) => {
+    const chain = getSharedMockChain();
+    return { ...chain, simulate: async (tx: VersionedTransaction, a: string[]) => rewrite(await chain.simulate(tx, a), a) };
+  };
+  const buildWith = async (chain: FlowDeps["chain"]) => {
+    const u = await signedInUser();
+    const logs: string[] = [];
+    const state = createCopyMemoryState();
+    const d = deps({ state, chain, log: (m: string) => logs.push(m) });
+    const q = await quoteCopy(d, get("/q", u), trade.id);
+    const res = await code(buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id));
+    return { res, log: logs.join("\n"), orders: state.orders.size };
+  };
+
+  it("simulation: a wallet re-owned by another program is refused", async () => {
+    const r = await buildWith(simWith((s) => ({ ...s, accounts: s.accounts.map((a, i) => (i === 0 && a ? { ...a, owner: attacker() } : a)) })));
+    expect(r).toMatchObject({ res: "TX_REJECTED", orders: 0 });
+    expect(r.log).toContain("WALLET_OWNER");
+  });
+
+  it("simulation: an allocated (data) or executable wallet is refused", async () => {
+    const data = await buildWith(simWith((s) => ({ ...s, accounts: s.accounts.map((a, i) => (i === 0 && a ? { ...a, data: Buffer.alloc(32) } : a)) })));
+    expect(data.log).toContain("WALLET_OWNER");
+    const exec = await buildWith(simWith((s) => ({ ...s, accounts: s.accounts.map((a, i) => (i === 0 && a ? { ...a, executable: true } : a)) })));
+    expect(exec.log).toContain("WALLET_OWNER");
+  });
+
+  it("simulation: an Assign CPI of the wallet is refused even if it's assigned back", async () => {
+    const r = await buildWith(
+      simWith((s, a) => ({ ...s, innerSystemOps: [...(s.innerSystemOps ?? []), { type: "assign", target: a[0] }] })),
+    );
+    expect(r).toMatchObject({ res: "TX_REJECTED", orders: 0 });
+    expect(r.log).toContain("WALLET_OWNER");
+  });
+
+  it("simulation: unknown System ops, a missing System op list or a missing owner fail closed", async () => {
+    const nonce = await buildWith(simWith((s) => ({ ...s, innerSystemOps: [{ type: "unknown", target: null }] })));
+    expect(nonce.log).toContain("SYSTEM_CPI");
+    const none = await buildWith(simWith((s) => ({ ...s, innerSystemOps: null })));
+    expect(none.log).toContain("INNER_UNAVAILABLE");
+    const noOwner = await buildWith(
+      simWith((s) => ({ ...s, accounts: s.accounts.map((a, i) => (i === 0 && a ? ({ data: a.data, lamports: a.lamports } as never) : a)) })),
+    );
+    expect(noOwner.log).toContain("SIMULATION_ACCOUNTS");
+  });
+
+  it("the real RPC adapter maps owner/executable and the jsonParsed inner System instructions", async () => {
+    process.env.SOLANA_RPC_URL ??= "https://rpc.example/";
+    const { Connection } = await import("@solana/web3.js");
+    const { rpcChain } = await import("@/lib/solana");
+    const w = Keypair.generate();
+    const evil = attacker();
+    const tx = new VersionedTransaction(
+      new TransactionMessage({ payerKey: w.publicKey, recentBlockhash: bs58.encode(Buffer.alloc(32, 1)), instructions: [] }).compileToV0Message(),
+    );
+    const spy = vi.spyOn(Connection.prototype, "simulateTransaction").mockResolvedValue({
+      context: { slot: 1 },
+      value: {
+        err: null,
+        logs: [],
+        accounts: [{ data: ["", "base64"], lamports: 1, owner: evil, executable: false, rentEpoch: 0 }],
+        innerInstructions: [{ index: 0, instructions: [{ program: "system", programId: SYSTEM, parsed: { type: "assign", info: { account: w.publicKey.toBase58(), owner: evil } } }] }],
+      },
+    } as never);
+    try {
+      const r = await rpcChain.simulate(tx, [w.publicKey.toBase58()]);
+      expect(spy.mock.calls[0][1]).toMatchObject({ sigVerify: false, innerInstructions: true, accounts: { encoding: "base64" } });
+      expect(r.accounts[0]).toMatchObject({ owner: evil, executable: false });
+      expect(r.innerSystemOps).toEqual([{ type: "assign", target: w.publicKey.toBase58() }]);
+      expect(() => checkInnerSystemOps(r.innerSystemOps, w.publicKey.toBase58())).toThrow(/wallet/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  const landedWith = (over: (t: LandedTx, wallet: string) => Partial<LandedTx>, walletAccount?: () => Promise<unknown>) => {
+    const chain = getSharedMockChain();
+    return {
+      ...chain,
+      getLandedTransaction: async (sig: string) => {
+        const t = await chain.getLandedTransaction(sig);
+        return t && { ...t, ...over(t, t.message.staticAccountKeys[0].toBase58()) };
+      },
+      ...(walletAccount ? { getWalletAccount: walletAccount as FlowDeps["chain"]["getWalletAccount"] } : {}),
+    };
+  };
+  const confirmWith = async (chain: FlowDeps["chain"]) => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const alerts: string[] = [];
+    const d = deps({ state, chain, alert: (m: string) => alerts.push(m) });
+    const { b } = await quoteAndBuild(d, u);
+    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    return { res: await code(confirmOrder(d, req, "copy")), state, b, alerts };
+  };
+
+  it("confirm: a landed Assign of the wallet fails the order, records nothing and alerts", async () => {
+    const r = await confirmWith(landedWith((t, w) => ({ innerSystemOps: [...(t.innerSystemOps ?? []), { type: "assign", target: w }] })));
+    expect(r.res).toBe("TX_REJECTED");
+    expect(r.state.copies.size).toBe(0);
+    expect(r.state.orders.get(r.b.orderId)?.status).toBe("failed");
+    expect(r.alerts.join("\n")).toContain("WALLET_OWNER");
+  });
+
+  it("confirm: a wallet now owned by another program is refused; unknown System ops stay retryable", async () => {
+    const owned = await confirmWith(landedWith(() => ({}), async () => ({ owner: attacker(), executable: false, dataLength: 0 })));
+    expect(owned.res).toBe("TX_REJECTED");
+    expect(owned.state.copies.size).toBe(0);
+    const unknown = await confirmWith(landedWith(() => ({ innerSystemOps: null })));
+    expect(unknown.res).toBe("VERIFY_UNAVAILABLE");
+    expect(unknown.state.orders.get(unknown.b.orderId)?.status).toBe("pending");
+    const rpcDown = await confirmWith(landedWith(() => ({}), async () => Promise.reject(new Error("rpc down"))));
+    expect(rpcDown.res).toBe("VERIFY_UNAVAILABLE");
   });
 });

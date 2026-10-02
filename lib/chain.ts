@@ -4,7 +4,7 @@
  *  - lib/mock/chain-mock.ts (MOCK_PANTA=true and tests; an in-memory ledger)
  */
 import type { VersionedMessage } from "@solana/web3.js";
-import type { ChainReader } from "./tx-guard";
+import type { ChainReader, InnerSystemOp } from "./tx-guard";
 
 export type LandedTx = {
   err: unknown | null;
@@ -17,6 +17,8 @@ export type LandedTx = {
   payerUsdcOutBase?: bigint | null;
   /** Programs reached through CPI (meta.innerInstructions). null if unknown. */
   innerPrograms?: string[] | null;
+  /** Inner System instructions (F-01). null if unknown. */
+  innerSystemOps?: InnerSystemOp[] | null;
 };
 
 export type ConfirmationState = "confirmed" | "failed" | "pending" | "expired";
@@ -32,6 +34,8 @@ export interface Chain extends ChainReader {
   ): Promise<ConfirmationState>;
   /** The transaction as it landed on chain (confirmed commitment), or null if not found yet. */
   getLandedTransaction(signature: string): Promise<LandedTx | null>;
+  /** F-01: the wallet account's current owner, executable flag and data length (null = no account). */
+  getWalletAccount(address: string): Promise<{ owner: string; executable: boolean; dataLength: number } | null>;
   /**
    * MOCK CHAIN ONLY: "sign" and land the exact message without a wallet.
    * Undefined on the real chain, so simulated signing can't exist in real mode.
