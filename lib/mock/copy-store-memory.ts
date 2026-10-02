@@ -64,7 +64,7 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
     },
 
     async createPendingOrder(o) {
-      const row: PendingOrder = { ...o, id: randomUUID(), status: "pending", signature: null, broadcastSignature: null };
+      const row: PendingOrder = { ...o, id: randomUUID(), status: "pending", signature: null, broadcastSignature: null, reviewFlag: null };
       s.orders.set(row.id, row);
       return { ...row };
     },
@@ -74,6 +74,12 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
     },
     async signatureUsed(sig) {
       return used(sig);
+    },
+    async flagForReview(orderId, flag) {
+      const o = s.orders.get(orderId);
+      if (!o) return false;
+      o.reviewFlag = flag;
+      return true;
     },
     async completeOrder(orderId, userId, signature, opts) {
       // No await inside: runs to completion, like complete_order's row lock.

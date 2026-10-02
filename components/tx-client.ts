@@ -18,7 +18,14 @@ export type Checks = {
   otherAccountsChecked: number;
 };
 export type Built = { orderId: string; transaction: string; expiresAt: number; simulated: boolean; checks: Checks };
-export type Confirmed = { status: "confirmed"; signature: string; reported: boolean; simulated: boolean };
+export type Confirmed = {
+  status: "confirmed";
+  signature: string;
+  reported: boolean;
+  simulated: boolean;
+  /** H4-01 / L-02: recorded but flagged for review: what the user should check in their wallet. */
+  warning?: string;
+};
 
 /** An API error with our stable `code` (QUOTE_EXPIRED, TX_REJECTED, ...). */
 export class FlowError extends Error {

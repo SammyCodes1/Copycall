@@ -3109,14 +3109,90 @@ describe("H-04: F-02 is re-checked at confirm (landed token instructions; curren
   };
 
   for (const type of ["approve", "approveChecked", "setAuthority", "closeAccount"]) {
-    it(`a landed ${type} on the user's USDC account (the slot/clock-branching attack) is refused, the order failed, alerted`, async () => {
+    it(`H4-01: a landed ${type} on the user's USDC account (the slot/clock-branching attack) is RECORDED, flagged for review, alerted once, and the user is told to revoke`, async () => {
       const r = await confirmWith(withLanded((_t, ata) => ({ tokenAuthorityOps: [{ type, target: ata }] })));
-      expect(r.res).toBe("TX_REJECTED");
-      expect(r.state.copies.size).toBe(0);
-      expect(r.state.orders.get(r.b.orderId)?.status).toBe("failed");
-      expect(r.alerts.join("\n")).toMatch(/USDC_AUTHORITY/);
+      expect(r.res).toBe("OK");
+      expect(r.state.copies.size).toBe(1);
+      expect(r.state.orders.get(r.b.orderId)?.status).toBe("confirmed");
+      expect(r.state.orders.get(r.b.orderId)?.reviewFlag).toBe("USDC_AUTHORITY");
+      expect(r.alerts.filter((m) => /USDC_AUTHORITY/.test(m)).length).toBe(1);
+      expect(r.alerts.join("\n")).toMatch(/recorded and flagged for review/);
+      // Re-confirming is idempotent: one record, no second alert, same warning.
+      expect(await r.again()).toBe("OK");
+      expect(r.state.copies.size).toBe(1);
+      expect(r.alerts.filter((m) => /USDC_AUTHORITY/.test(m)).length).toBe(1);
     });
   }
+
+  it("H4-01 PoF: the auditor's two-payments case is gone: one landed copy, one record (flagged), the confirm says revoke, never 'Transaction rejected / Start again / Nothing was spent'", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const alerts: string[] = [];
+    const c = withLanded((_t, ata) => ({ tokenAuthorityOps: [{ type: "approve", target: ata }] }));
+    const d = deps({ state, chain: c, alert: (m: string) => alerts.push(m) });
+    const { b } = await quoteAndBuild(d, u);
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64")).signatures[0]);
+    const r = await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction }, u), "copy");
+    expect(r).toMatchObject({ status: "confirmed", signature: sig });
+    const warning = (r as { warning?: string }).warning ?? "";
+    expect(warning).toMatch(/revoke any delegate/i);
+    expect(warning).not.toMatch(/nothing was (spent|sent)|start again|transaction rejected/i);
+    expect(state.copies.size).toBe(1);
+    // The confirmed-order path (e.g. a later re-check by signature) repeats the warning.
+    const again = await confirmOrder(d, post("/c", { orderId: b.orderId, signature: sig }, u), "copy");
+    expect((again as { warning?: string }).warning).toBe(warning);
+    // The user's natural next step used to be "Start again": a second copy now isn't needed, and
+    // nothing about the first one was failed, so there is exactly one record per landed copy.
+    expect([...state.orders.values()].filter((o) => o.status === "failed").length).toBe(0);
+  });
+
+  it("H4-01: a revive (order failed earlier, e.g. by an older build) of a landed USDC_AUTHORITY tx records it, flagged", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const c = withLanded((_t, ata) => ({ tokenAuthorityOps: [{ type: "setAuthority", target: ata }] }));
+    const d = deps({ state, chain: c, alert: () => {} });
+    const { b } = await quoteAndBuild(d, u);
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64")).signatures[0]);
+    await chain.send(Buffer.from(signedTransaction, "base64"));
+    await createMemoryCopyStore(state).failOrder(b.orderId);
+    const r = await confirmOrder(d, post("/c", { orderId: b.orderId, signature: sig }, u), "copy");
+    expect(r.status).toBe("confirmed");
+    expect(state.copies.size).toBe(1);
+    expect(state.orders.get(b.orderId)?.reviewFlag).toBe("USDC_AUTHORITY");
+  });
+
+  it("H4-01 fallback: if the review flag can't be written, it isn't recorded unflagged: pending (VERIFY_UNAVAILABLE) + alert, never failed", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const alerts: string[] = [];
+    const c = withLanded((_t, ata) => ({ tokenAuthorityOps: [{ type: "closeAccount", target: ata }] }));
+    const store = createMemoryCopyStore(state);
+    for (const broken of [async () => false, async () => Promise.reject(new Error("db down"))]) {
+      const d = deps({ state, chain: c, alert: (m: string) => alerts.push(m), copy: { ...store, flagForReview: broken } });
+      const { b } = await quoteAndBuild(d, u);
+      const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+      expect(await code(confirmOrder(d, req, "copy"))).toBe("VERIFY_UNAVAILABLE");
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+      expect(state.orders.get(b.orderId)?.reviewFlag).toBeNull();
+    }
+    expect(state.copies.size).toBe(0);
+    expect(alerts.join("\n")).toMatch(/couldn't write the review flag/);
+    expect(alerts.join("\n")).toMatch(/USDC_AUTHORITY/);
+  });
+
+  it("H4-03: a non-TxRejected error from the token check is unknown (pending, alerted once), never USDC_AUTHORITY and never failed", async () => {
+    // A null op makes checkTokenAuthorityOps throw a TypeError, not a TxRejected.
+    const r = await confirmWith(withLanded(() => ({ tokenAuthorityOps: [null as unknown as { type: string; target: string }] })));
+    expect(r.res).toBe("VERIFY_UNAVAILABLE");
+    expect(await r.again()).toBe("VERIFY_UNAVAILABLE");
+    expect(r.state.orders.get(r.b.orderId)?.status).toBe("pending");
+    expect(r.state.orders.get(r.b.orderId)?.reviewFlag).toBeNull();
+    expect(r.state.copies.size).toBe(0);
+    expect(r.alerts.join("\n")).not.toMatch(/USDC_AUTHORITY/);
+    expect(r.alerts.filter((m) => /token check errored/.test(m)).length).toBe(1);
+  });
 
   it("a delegate/close on some OTHER token account (e.g. Panta's vault) is fine: recorded", async () => {
     const other = Keypair.generate().publicKey.toBase58();

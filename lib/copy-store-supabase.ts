@@ -29,7 +29,7 @@ const exact = (v: unknown) => usdcExact(exactBase(v));
 const ORDER_COLS =
   "id, user_id, wallet, kind, leader_trade_id, market_id, side, amount_usdc::text, fee_usdc::text, fee_model, " +
   "max_usdc_out::text, shares::text, quote_id, panta_order_id, message_hash, message_base64, " +
-  "last_valid_block_height::text, created_at, expires_at, status, signature, broadcast_signature";
+  "last_valid_block_height::text, created_at, expires_at, status, signature, broadcast_signature, review_flag";
 
 function fail(what: string): never {
   throw new Error(`Database error: ${what}`);
@@ -58,6 +58,7 @@ type OrderRow = {
   status: PendingOrder["status"];
   signature: string | null;
   broadcast_signature?: string | null;
+  review_flag?: string | null;
 };
 
 function toOrder(r: OrderRow): PendingOrder {
@@ -87,6 +88,7 @@ function toOrder(r: OrderRow): PendingOrder {
     status: r.status,
     signature: r.signature,
     broadcastSignature: r.broadcast_signature ?? null,
+    reviewFlag: r.review_flag ?? null,
   };
 }
 
@@ -170,6 +172,15 @@ export const supabaseCopyStore: CopyStore = {
       .eq("id", orderId)
       .eq("status", "pending");
     if (error) fail("fail order");
+  },
+  async flagForReview(orderId, flag) {
+    const { data, error } = await getDb()
+      .from("pending_orders")
+      .update({ review_flag: flag })
+      .eq("id", orderId)
+      .select("id");
+    if (error) fail("flag for review");
+    return (data ?? []).length === 1;
   },
   async noteBroadcast(orderId, signature) {
     const db = getDb();

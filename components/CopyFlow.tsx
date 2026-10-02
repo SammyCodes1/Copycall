@@ -256,6 +256,11 @@ export function CopyFlow({ tradeId, base, nowSec, mock, sessionWallet, closed }:
                 {phase.result.simulated ? "the mock chain" : "Solana"}
                 {phase.result.reported ? " and reported to Panta." : ". Panta attribution will be retried."}
               </p>
+              {phase.result.warning && (
+                <p role="alert" className="mt-2 text-sm leading-6 text-amber-300">
+                  {phase.result.warning}
+                </p>
+              )}
               <p className="num mt-2 break-all text-xs text-fg-subtle">
                 {phase.result.simulated ? "Simulated signature " : "Signature "}
                 {phase.result.signature}

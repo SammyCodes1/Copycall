@@ -282,3 +282,23 @@ describe("H-06: 0014 never fails on old rows above 1000; 0016 bounds the saved s
     expect(await valid(db, "users_max_stake_usdc_ceiling")).toBe(true);
   }, 60_000);
 });
+
+describe("H4-01 / L-02: pending_orders.review_flag (0018)", () => {
+  it("adds a nullable, codes-only flag on legacy rows; re-runnable; complete/fail still work with it set", async () => {
+    const db = await freshDb();
+    const { a, b } = await legacyRows(db);
+    for (const f of from8) await db.exec(readFileSync(join(dir, f), "utf8"));
+    const m18 = readFileSync(join(dir, files.find((f) => f.includes("review_flag"))!), "utf8");
+    await db.exec(m18); // re-run: no error, nothing changes
+    expect((await db.query<{ f: string | null }>(`select review_flag as f from public.pending_orders where id = $1`, [a])).rows[0].f).toBeNull();
+    await db.query(`update public.pending_orders set review_flag = 'USDC_AUTHORITY,OVER_LIMIT' where id = $1`, [a]);
+    for (const bad of ["usdc", "USDC AUTHORITY", "A,", "X;drop", "A".repeat(41)])
+      await expect(db.query(`update public.pending_orders set review_flag = $2 where id = $1`, [b, bad])).rejects.toThrow(/review_flag_format/);
+    // Completing / failing a flagged order works as before.
+    const r = await db.query<{ r: string }>(`select public.complete_order($1, $2, $3) as r`, [a, (await db.query<{ user_id: string }>(`select user_id from public.pending_orders where id = $1`, [a])).rows[0].user_id, "5".repeat(64)]);
+    expect(r.rows[0].r).toBe("ok");
+    await db.query(`update public.pending_orders set review_flag = 'UNEXPECTED_CPI', status = 'failed' where id = $1`, [b]);
+    await db.exec(m18);
+    expect((await db.query<{ f: string }>(`select review_flag as f from public.pending_orders where id = $1`, [a])).rows[0].f).toBe("USDC_AUTHORITY,OVER_LIMIT");
+  }, 60_000);
+});

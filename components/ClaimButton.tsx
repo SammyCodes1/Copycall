@@ -9,7 +9,7 @@ type State =
   | { k: "idle" }
   | { k: "building" }
   | { k: "signing" | "confirming"; built: Built }
-  | { k: "done"; amount: string; simulated: boolean }
+  | { k: "done"; amount: string; simulated: boolean; warning?: string }
   | { k: "error"; message: string };
 
 export function ClaimButton({
@@ -33,7 +33,7 @@ export function ClaimButton({
       const { data: built } = await api<Built & { winningShares: string }>("POST", "/api/claim/build", { marketId });
       const r = await sign(built, "/api/claim/confirm", (k) => setState({ k, built }));
       // What the checked simulation says arrives (USDC out is negative for a claim), not the share count.
-      setState({ k: "done", amount: built.checks.usdcOut.replace(/^-/, ""), simulated: r.simulated });
+      setState({ k: "done", amount: built.checks.usdcOut.replace(/^-/, ""), simulated: r.simulated, warning: r.warning });
       // Let the confirmation read for a moment, then re-render the row as "Claimed".
       setTimeout(() => router.refresh(), 3000);
     } catch (e) {
@@ -60,6 +60,11 @@ export function ClaimButton({
       <p role="status" className="text-sm text-brand-300">
         Claimed <span className="num">{state.amount} USDC</span>
         {state.simulated ? " (simulated)" : ""}
+        {state.warning && (
+          <span role="alert" className="mt-1 block text-amber-300">
+            {state.warning}
+          </span>
+        )}
       </p>
     );
   }

@@ -33,9 +33,15 @@ export type PendingOrder = {
   signature: string | null;
   /** E-02: the signature we broadcast (set before sending). Not unique; `signature` is set on confirm. */
   broadcastSignature: string | null;
+  /**
+   * H4-01 / L-02: a landed transaction that failed a confirm check after it moved funds is
+   * recorded (never failed) with the codes of the checks it failed, comma-separated (e.g.
+   * "USDC_AUTHORITY"), for a human to review. Null: nothing to review.
+   */
+  reviewFlag: string | null;
 };
 
-export type PendingOrderInsert = Omit<PendingOrder, "id" | "status" | "signature" | "broadcastSignature">;
+export type PendingOrderInsert = Omit<PendingOrder, "id" | "status" | "signature" | "broadcastSignature" | "reviewFlag">;
 
 export type CompleteResult = "ok" | "already_confirmed" | "signature_used" | "not_pending";
 
@@ -96,6 +102,11 @@ export interface CopyStore {
     opts?: { allowFailed?: boolean },
   ): Promise<CompleteResult>;
   failOrder(orderId: string): Promise<void>;
+  /**
+   * H4-01 / L-02: set the order's review flag (any status; written BEFORE completeOrder, so a
+   * flagged landing is never recorded unflagged). True iff the order exists and now carries it.
+   */
+  flagForReview(orderId: string, flag: string): Promise<boolean>;
   /**
    * E-02: remember the signature we are about to broadcast (pending orders only, first one wins).
    * J-02: true only if the order is pending and its stored broadcast signature is now THIS one

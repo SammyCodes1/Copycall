@@ -465,6 +465,7 @@ async function assembleAndStore(
       | "createdAt"
       | "expiresAt"
       | "broadcastSignature"
+      | "reviewFlag"
     >;
   },
 ): Promise<BuiltTx> {
@@ -765,7 +766,32 @@ export async function buildClaimTx(d: FlowDeps, request: Request): Promise<Built
 
 export type ConfirmResult =
   | { status: "pending"; signature: string }
-  | { status: "confirmed"; signature: string; reported: boolean; simulated: boolean; kind: TxKind };
+  | {
+      status: "confirmed";
+      signature: string;
+      reported: boolean;
+      simulated: boolean;
+      kind: TxKind;
+      /** H4-01 / L-02: recorded, but flagged for review; what the user should check. */
+      warning?: string;
+    };
+
+/**
+ * H4-01 / L-02: checks that can fail on a transaction that already LANDED (and so already moved
+ * funds). Failing such an order would hide a real position and make "Start again" pay twice, so
+ * it is recorded, flagged for review (pending_orders.review_flag), alerted, and the user is told
+ * what to check. Never "Nothing was spent" / "Transaction rejected".
+ */
+export const REVIEW_WARNINGS: Record<string, string> = {
+  USDC_AUTHORITY:
+    "This transaction also changed control of your USDC account (a delegate, a new owner or a close). Open your wallet, check your USDC account and revoke any delegate you didn't set. We've flagged it for review.",
+};
+const GENERIC_REVIEW_WARNING = "This transaction did something we didn't expect. It was recorded and flagged for review; check your wallet.";
+export function reviewWarning(flag: string | null | undefined): string | undefined {
+  if (!flag) return undefined;
+  const parts = [...new Set(flag.split(",").map((c) => REVIEW_WARNINGS[c] ?? GENERIC_REVIEW_WARNING))];
+  return parts.join(" ");
+}
 
 /** POST /api/copy/confirm and /api/claim/confirm. */
 export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind): Promise<ConfirmResult> {
@@ -783,7 +809,8 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   if (order.status === "confirmed") {
     // B3-07: the real report status, not an unconditional true.
     const reported = await d.copy.isReported(order.id);
-    return { status: "confirmed", signature: order.signature!, reported, simulated: d.mock, kind };
+    const warning = reviewWarning(order.reviewFlag);
+    return { status: "confirmed", signature: order.signature!, reported, simulated: d.mock, kind, ...(warning ? { warning } : {}) };
   }
   // B3-06: a failed order (e.g. marked expired just as it landed) may be re-verified on chain
   // by signature. Every landed-transaction check below runs again before anything is recorded.
@@ -1106,6 +1133,16 @@ async function verifyAndRecord(
 ): Promise<ConfirmResult> {
   const { kind } = order;
   const { simulated, revive } = opts;
+  // H4-01 / L-02: failed checks on what already landed: recorded + flagged, never failed.
+  const review: string[] = [];
+  const flag = (code: string, detail: string) => {
+    if (!review.includes(code)) review.push(code);
+    alertOnce(
+      d,
+      `review:${code}:${order.id}`,
+      `${kind} confirm ${code} for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…, order ${order.id.slice(0, 8)}): ${detail}; recorded and flagged for review`,
+    );
+  };
   const state = await d.chain.waitForConfirmation(
     signature,
     order.lastValidBlockHeight,
@@ -1225,16 +1262,15 @@ async function verifyAndRecord(
   try {
     checkTokenAuthorityOps(landed.tokenAuthorityOps, usdcAta);
   } catch (err) {
-    const code = err instanceof TxRejected ? err.code : "USDC_AUTHORITY";
-    if (code === "TOKEN_UNKNOWN") {
-      alertOnce(d, `token-unknown:${order.id}`, `${kind} confirm TOKEN_UNKNOWN for ${signature.slice(0, 8)}…: an unreadable token instruction; not recorded yet`);
+    // H4-03: only a definite USDC_AUTHORITY finding is one; anything else (an unreadable
+    // instruction, any other code, a non-TxRejected error) is unknown: pending, alerted once.
+    if (!(err instanceof TxRejected) || err.code !== "USDC_AUTHORITY") {
+      const what = err instanceof TxRejected ? `${err.code}: ${err.message.slice(0, 80)}` : "the token check errored";
+      alertOnce(d, `token-unknown:${order.id}`, `${kind} confirm TOKEN_UNKNOWN for ${signature.slice(0, 8)}…: ${what}; not recorded yet`);
       throw verifyUnavailable(order.id, signature);
     }
-    (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
-      `${kind} confirm ${code} for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…): the landed tx changed control of the USDC account; not recorded`,
-    );
-    await d.copy.failOrder(order.id);
-    asRejection(err);
+    // H4-01: it landed, so the funds moved: record it (flagged), tell the user to revoke.
+    flag("USDC_AUTHORITY", `the landed tx changed control of the USDC account (${err.message.slice(0, 120)})`);
   }
   const post = landed.payerPostLamports;
   if (post === undefined || post === null) {
@@ -1283,6 +1319,21 @@ async function verifyAndRecord(
   } catch {
     d.log?.(`${kind} confirm: couldn't read the USDC account for ${signature.slice(0, 8)}… (alert-only check skipped)`);
   }
+  // H4-01 / L-02: the flag is written BEFORE recording, so a flagged landing is never recorded
+  // unflagged. If it can't be written, recording isn't safe yet: pending (alerted above).
+  if (review.length > 0) {
+    let ok = false;
+    try {
+      ok = await d.copy.flagForReview(order.id, review.join(","));
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      alertOnce(d, `review-write:${order.id}`, `${kind} confirm: couldn't write the review flag for order ${order.id.slice(0, 8)} (${signature.slice(0, 8)}…); not recorded yet`);
+      throw verifyUnavailable(order.id, signature);
+    }
+  }
+  const warned = review.length > 0 ? { warning: reviewWarning(review.join(","))! } : {};
   // Atomic in the DB (complete_order locks the row; UNIQUE order_id / signature back it up).
   let result = await d.copy.completeOrder(order.id, owner.uid, signature, { allowFailed: revive });
   if (result === "not_pending" && !revive) {
@@ -1302,7 +1353,7 @@ async function verifyAndRecord(
   }
   if (result === "already_confirmed") {
     // A concurrent confirm of the same signature recorded it first: idempotent, no second record or report.
-    return { status: "confirmed", signature, reported: await d.copy.isReported(order.id), simulated, kind };
+    return { status: "confirmed", signature, reported: await d.copy.isReported(order.id), simulated, kind, ...warned };
   }
   if (result === "signature_used") throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
   if (result === "not_pending")
@@ -1321,7 +1372,7 @@ async function verifyAndRecord(
       attempts: 1,
     })) === "reported";
   await d.copy.cacheDelete(`positions:${owner.wallet}`);
-  return { status: "confirmed", signature, reported, simulated, kind };
+  return { status: "confirmed", signature, reported, simulated, kind, ...warned };
 }
 
 export const SWEEP = { limit: 20, minAgeSec: 60, maxAttempts: 30, budgetMs: 60_000, abandonLimit: 50 };
