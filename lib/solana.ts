@@ -9,6 +9,7 @@ import "server-only";
  */
 import { Connection, PublicKey, type ConfirmedSignatureInfo, type VersionedTransaction } from "@solana/web3.js";
 import type { Chain, ConfirmationState } from "./chain";
+import { innerProgramIds } from "./tx-guard";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, USDC_MINT } from "./solana-constants";
 import creatorsJson from "@/fixtures/creators.json";
 import { isMockMode, requireEnv } from "./env";
@@ -117,13 +118,24 @@ export const rpcChain: Chain = {
       replaceRecentBlockhash: false, // simulate the EXACT bytes we will hand to the wallet
       commitment: "confirmed",
       accounts: { encoding: "base64", addresses },
+      innerInstructions: true, // B3-04: we check every CPI target
     });
+    let innerPrograms: string[] | null = null;
+    try {
+      innerPrograms = innerProgramIds(
+        res.value.innerInstructions,
+        tx.message.staticAccountKeys.map((k) => k.toBase58()),
+      );
+    } catch {
+      innerPrograms = null; // unreadable: the guard fails closed
+    }
     return {
       err: res.value.err ?? null,
       logs: res.value.logs ?? [],
       accounts: (res.value.accounts ?? []).map((a) =>
         a ? { data: Buffer.from(a.data[0], "base64"), lamports: a.lamports } : null,
       ),
+      innerPrograms,
     };
   },
 
@@ -166,11 +178,23 @@ export const rpcChain: Chain = {
           .reduce((n, r) => n + BigInt(r.uiTokenAmount.amount), 0n);
       payerUsdcOutBase = sum(tx.meta.preTokenBalances) - sum(tx.meta.postTokenBalances);
     }
+    let innerPrograms: string[] | null = null;
+    try {
+      const keys = [
+        ...tx.transaction.message.staticAccountKeys.map((k) => k.toBase58()),
+        ...(tx.meta?.loadedAddresses?.writable ?? []).map((k) => k.toBase58()),
+        ...(tx.meta?.loadedAddresses?.readonly ?? []).map((k) => k.toBase58()),
+      ];
+      innerPrograms = innerProgramIds(tx.meta?.innerInstructions, keys);
+    } catch {
+      innerPrograms = null;
+    }
     return {
       err: tx.meta?.err ?? null,
       message: tx.transaction.message,
       signatures: tx.transaction.signatures,
       payerUsdcOutBase,
+      innerPrograms,
     };
   },
 };

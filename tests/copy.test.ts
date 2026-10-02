@@ -825,3 +825,41 @@ describe("B3-03: claims must pay the winnings into the user's own USDC ATA", () 
     expect(state.claims.size).toBe(0);
   });
 });
+
+describe("B3-04: the landed transaction's CPIs are checked at confirm", () => {
+  const landedWith = (programs: (p: string[] | null | undefined) => string[] | null) => {
+    const chain = getSharedMockChain();
+    return {
+      ...chain,
+      getLandedTransaction: async (sig: string) => {
+        const t = await chain.getLandedTransaction(sig);
+        return t && { ...t, innerPrograms: programs(t.innerPrograms) };
+      },
+    };
+  };
+
+  it("a landed CPI into an unknown program is refused, the order failed and nothing recorded", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const logs: string[] = [];
+    const evil = Keypair.generate().publicKey.toBase58();
+    const d = deps({ state, chain: landedWith((p) => [...(p ?? []), evil]), log: (m: string) => logs.push(m) });
+    const { b } = await quoteAndBuild(d, u);
+    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await code(confirmOrder(d, req, "copy"))).toBe("TX_REJECTED");
+    expect(state.copies.size).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+    expect(logs.join("\n")).toContain("UNEXPECTED_CPI");
+  });
+
+  it("missing inner instructions fail closed (retryable, nothing recorded)", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state, chain: landedWith(() => null) });
+    const { b } = await quoteAndBuild(d, u);
+    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await code(confirmOrder(d, req, "copy"))).toBe("VERIFY_UNAVAILABLE");
+    expect(state.copies.size).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+  });
+});

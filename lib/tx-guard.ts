@@ -42,6 +42,7 @@ export const MAX_PRIORITY_FEE_LAMPORTS = 1_000_000n;
 /** Largest SOL spend allowed in simulation: tx fee + rent for new accounts (0.02 SOL). */
 export const MAX_SOL_SPEND_LAMPORTS = 20_000_000n;
 export const MAX_INSTRUCTIONS = 12;
+const USDC_DECIMALS = 6;
 /** Token accounts we are willing to check in one simulation. More than this fails closed. */
 export const MAX_TOKEN_ACCOUNTS_CHECKED = 100;
 
@@ -150,6 +151,7 @@ export function checkInstructions(ixs: PantaInstruction[], ctx: GuardContext): v
   ]);
   const disc = anchorDiscriminator(PANTA_IX_NAMES[ctx.kind]);
 
+  const userUsdcAta = associatedTokenAddress(ctx.feePayer, USDC_MINT, TOKEN_PROGRAM_ID);
   // Accounts referenced by Panta instructions: the only valid token-transfer destinations.
   const pantaAccounts = new Set<string>();
   let pantaMain = 0;
@@ -218,6 +220,8 @@ export function checkInstructions(ixs: PantaInstruction[], ctx: GuardContext): v
       }
       case ATA_PROGRAM_ID: {
         // Only CreateIdempotent (1): [payer, ata, owner, mint, system, token program].
+        // B3-05: only the user's own USDC account, so the user never pays rent for foreign
+        // accounts. USDC is a classic SPL Token mint, so the token program must be Token.
         if (data.length !== 1 || data[0] !== 1)
           throw new TxRejected("ATA_IX", "Only idempotent token-account creation is allowed");
         if (acct(0) !== ctx.feePayer)
@@ -225,6 +229,11 @@ export function checkInstructions(ixs: PantaInstruction[], ctx: GuardContext): v
         const tokenProgram = acct(5);
         if (tokenProgram !== TOKEN_PROGRAM_ID && tokenProgram !== TOKEN_2022_PROGRAM_ID)
           throw new TxRejected("ATA_IX", "Bad token program");
+        if (acct(2) !== ctx.feePayer) throw new TxRejected("ATA_OWNER", "Creates a token account for someone else");
+        if (acct(3) !== USDC_MINT) throw new TxRejected("ATA_MINT", "Creates a token account for another token");
+        if (tokenProgram !== TOKEN_PROGRAM_ID) throw new TxRejected("ATA_IX", "USDC uses the SPL Token program");
+        if (acct(1) !== userUsdcAta || acct(4) !== SYSTEM_PROGRAM_ID)
+          throw new TxRejected("ATA_ADDRESS", "Token account address doesn't match your USDC account");
         break;
       }
       case TOKEN_PROGRAM_ID:
@@ -239,7 +248,12 @@ export function checkInstructions(ixs: PantaInstruction[], ctx: GuardContext): v
         else throw new TxRejected("TOKEN_IX", tokenIxName(data[0]) + " is not allowed");
         if (!dest || !pantaAccounts.has(dest))
           throw new TxRejected("EXTRA_TRANSFER", "Token transfer to an account the order doesn't use");
-        if (authority === ctx.feePayer) tokenOut += u64(data, 1);
+        // B3-05: only USDC from the user's own USDC account (SPL Token), signed by the user.
+        if (acct(0) !== userUsdcAta || authority !== ctx.feePayer || ix.programId !== TOKEN_PROGRAM_ID)
+          throw new TxRejected("TOKEN_SOURCE", "Token transfer from an account other than your USDC account");
+        if (data[0] === 12 && (acct(1) !== USDC_MINT || data[9] !== USDC_DECIMALS))
+          throw new TxRejected("TOKEN_MINT", "Token transfer of another token");
+        tokenOut += u64(data, 1);
         break;
       }
       case SYSTEM_PROGRAM_ID:
@@ -316,6 +330,46 @@ export function invokedPrograms(message: VersionedMessage): string[] {
   return message.compiledInstructions.map((ix) => keys[ix.programIdIndex]?.toBase58() ?? "?");
 }
 
+/**
+ * B3-04: programs a transaction may reach through CPI (inner instructions):
+ * Panta, Token, Token-2022, ATA and System. Compute Budget can't be CPI'd and
+ * anything else (stake, NFT, other DeFi programs) is refused.
+ */
+export function allowedInnerPrograms(pantaProgramIds: ReadonlySet<string>): ReadonlySet<string> {
+  return new Set([...pantaProgramIds, SYSTEM_PROGRAM_ID, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ATA_PROGRAM_ID]);
+}
+
+/**
+ * Inner instructions from an RPC response (simulateTransaction with
+ * innerInstructions: true, or getTransaction meta) as program ids. Accepts the
+ * parsed shape ({programId}) and the compiled shape ({programIdIndex} into the
+ * message's account keys). Anything unreadable throws: fail closed.
+ */
+export function innerProgramIds(inner: unknown, accountKeys: readonly string[]): string[] {
+  if (!Array.isArray(inner)) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+  const out: string[] = [];
+  for (const group of inner) {
+    const list = (group as { instructions?: unknown })?.instructions;
+    if (!Array.isArray(list)) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+    for (const ix of list as Record<string, unknown>[]) {
+      let id: string | undefined;
+      if (ix && ix.programId !== undefined) id = String(ix.programId);
+      else if (ix && typeof ix.programIdIndex === "number") id = accountKeys[ix.programIdIndex];
+      if (!id) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't read the inner instructions");
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+/** Throws unless every inner (CPI) program is allowlisted. null = the RPC didn't say: fail closed. */
+export function checkInnerPrograms(programs: readonly string[] | null | undefined, pantaProgramIds: ReadonlySet<string>) {
+  if (!programs) throw new TxRejected("INNER_UNAVAILABLE", "Couldn't verify the programs this transaction calls");
+  const allowed = allowedInnerPrograms(pantaProgramIds);
+  for (const p of programs)
+    if (!allowed.has(p)) throw new TxRejected("UNEXPECTED_CPI", `Transaction calls an unexpected program ${p}`);
+}
+
 /** Confirm-time program check on the transaction as it landed on chain (addendum C). */
 export function checkLandedPrograms(message: VersionedMessage, pantaProgramIds: ReadonlySet<string>): void {
   const allowed = new Set([
@@ -339,6 +393,8 @@ export type SimulationResult = {
   logs: string[];
   /** Post-state, in the order of the addresses passed in; null = account doesn't exist. */
   accounts: ({ data: Buffer; lamports: number } | null)[];
+  /** Programs reached through CPI during the simulation (B3-04). null = unknown, which fails closed. */
+  innerPrograms: string[] | null;
 };
 
 /** What the guard needs from chain (real RPC or the mock chain). */
@@ -353,6 +409,9 @@ export interface ChainReader {
 const AMOUNT_START = 64;
 const AMOUNT_END = 72;
 const readAmount = (data: Buffer) => (data.length >= AMOUNT_END ? data.readBigUInt64LE(AMOUNT_START) : 0n);
+const readKey = (data: Buffer, at: number) =>
+  data.length >= at + 32 ? new PublicKey(data.subarray(at, at + 32)) : PublicKey.default;
+const USDC_MINT_BYTES = new PublicKey(USDC_MINT);
 const withoutAmount = (data: Buffer) => Buffer.concat([data.subarray(0, AMOUNT_START), data.subarray(AMOUNT_END)]);
 
 export type SimulationCheck = {
@@ -382,6 +441,7 @@ export async function simulateAndCheck(
   wallet: string,
   maxUsdcDecreaseBase: bigint,
   minUsdcIncreaseBase = 0n,
+  pantaProgramIds: ReadonlySet<string> = new Set(),
 ): Promise<SimulationCheck> {
   const usdcAta = associatedTokenAddress(wallet, USDC_MINT);
   const [tokenAccounts, lamportsBefore] = await Promise.all([
@@ -399,6 +459,7 @@ export async function simulateAndCheck(
     throw new TxRejected("SIMULATION_FAILED", "Simulation failed: the transaction would not succeed");
   if (sim.accounts.length !== addresses.length)
     throw new TxRejected("SIMULATION_ACCOUNTS", "Simulation returned the wrong accounts");
+  checkInnerPrograms(sim.innerPrograms, pantaProgramIds); // B3-04
 
   const walletAfter = sim.accounts[0];
   const lamportsSpent = BigInt(lamportsBefore) - BigInt(walletAfter?.lamports ?? 0);
@@ -411,6 +472,9 @@ export async function simulateAndCheck(
   if (usdcPre && usdcPost && !withoutAmount(usdcPre.data).equals(withoutAmount(usdcPost.data))) {
     throw new TxRejected("USDC_AUTHORITY", "Transaction changes your USDC account's owner or delegate");
   }
+  // B3-05: the account we measure really is the user's USDC account.
+  if (usdcPost && (!readKey(usdcPost.data, 0).equals(USDC_MINT_BYTES) || readKey(usdcPost.data, 32).toBase58() !== wallet))
+    throw new TxRejected("USDC_ACCOUNT", "Your USDC account has the wrong mint or owner");
   const usdcBefore = usdcPre ? readAmount(usdcPre.data) : 0n;
   const usdcAfter = usdcPost ? readAmount(usdcPost.data) : 0n;
   const usdcDecrease = usdcBefore - usdcAfter;

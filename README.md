@@ -131,8 +131,11 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    10/min per user.
 2. `POST /api/copy/[tradeId]/build` `{quoteToken}`: Panta build, then `lib/tx-guard.ts` checks the instructions
    (program allowlist, you are the only signer and fee payer, one Panta instruction for this market, no
-   approvals / authority changes / closes, compute-budget and priority-fee caps, USDC out ≤ max stake), assembles
-   the v0 transaction, and simulates it (USDC decrease ≤ max stake, other token accounts unchanged, SOL spend ≤ 0.02).
+   approvals / authority changes / closes, compute-budget and priority-fee caps, USDC out ≤ max stake; token-account
+   creation only for your own USDC ATA under SPL Token, and top-level transfers only of USDC from that ATA), assembles
+   the v0 transaction, and simulates it with inner instructions (USDC decrease ≤ max stake, other token accounts
+   unchanged, SOL spend ≤ 0.02, every CPI target in {Panta, Token, Token-2022, ATA, System}; missing inner
+   instructions fail closed). The landed transaction's CPIs are checked again at confirm.
    The fee must match the quote. The exact bytes are stored as a pending order (90 s).
    **Fee model:** the max stake is the hard total, fee included, and the guard's cap is the stake itself in every
    model (5.00 approved = 5.00 cap, no fee or slippage headroom). Panta's docs don't say whether the quoted fee is

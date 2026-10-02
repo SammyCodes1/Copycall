@@ -21,6 +21,8 @@ import {
 import {
   TxRejected,
   assembleTransaction,
+  checkInnerPrograms,
+  innerProgramIds,
   checkInstructions,
   checkMessageShape,
   simulateAndCheck,
@@ -273,7 +275,9 @@ describe("simulation checks", () => {
     const other = associatedTokenAddress(wallet, MOCK_OTHER_MINT);
     const ix = tokenIx(TOKEN_PROGRAM_ID, [3, ...u64(1n)], [other, mockVault(primaryMarket), wallet]);
     const ixs = [...build.instructions, ix];
-    expect(reject(ixs, { maxUsdcOutBase: usdcToBase("6.00") })).toBe("ACCEPTED");
+    // Statically refused since B3-05 (only the user's USDC account may be a source) ...
+    expect(reject(ixs, { maxUsdcOutBase: usdcToBase("6.00") })).toBe("TOKEN_SOURCE");
+    // ... and the simulation still catches it on its own.
     const tx = assembleTransaction(ixs, build.recentBlockhash, wallet);
     await expect(simulateAndCheck(chain, tx, wallet, ctx.maxUsdcOutBase)).rejects.toMatchObject({
       code: "OTHER_ACCOUNT_CHANGED",
@@ -336,5 +340,123 @@ describe("assembly", () => {
       ],
     }).compileToV0Message();
     expect(() => checkMessageShape(other, wallet)).toThrow(TxRejected);
+  });
+});
+
+describe("B3-05: token accounts must be the user's own USDC account", () => {
+  const ataIx = (accts: string[]): PantaInstruction => ({
+    programId: ATA_PROGRAM_ID,
+    data: Buffer.from([1]).toString("base64"),
+    accounts: accts.map((pubkey, i) => ({ pubkey, isSigner: i === 0, isWritable: i < 2 })),
+  });
+  const withAta = (accts: string[]) => [...build.instructions.filter((i) => i.programId !== ATA_PROGRAM_ID), ataIx(accts)];
+
+  it("accepts creating the user's own USDC ATA", () => {
+    const ata = associatedTokenAddress(wallet, USDC_MINT);
+    expect(reject(withAta([wallet, ata, wallet, USDC_MINT, SYSTEM_PROGRAM_ID, TOKEN_PROGRAM_ID]))).toBe("ACCEPTED");
+  });
+
+  it("refuses the auditor's PoF: CreateIdempotent for a random owner and a random mint", () => {
+    const owner = randomKey();
+    const mint = randomKey();
+    const foreign = associatedTokenAddress(owner, mint);
+    expect(reject(withAta([wallet, foreign, owner, mint, SYSTEM_PROGRAM_ID, TOKEN_PROGRAM_ID]))).toBe("ATA_OWNER");
+    const otherMint = associatedTokenAddress(wallet, mint);
+    expect(reject(withAta([wallet, otherMint, wallet, mint, SYSTEM_PROGRAM_ID, TOKEN_PROGRAM_ID]))).toBe("ATA_MINT");
+  });
+
+  it("refuses a USDC ATA under Token-2022, or an address that isn't the derived ATA", () => {
+    const ata22 = associatedTokenAddress(wallet, USDC_MINT, TOKEN_2022_PROGRAM_ID);
+    expect(reject(withAta([wallet, ata22, wallet, USDC_MINT, SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]))).toBe("ATA_IX");
+    expect(reject(withAta([wallet, randomKey(), wallet, USDC_MINT, SYSTEM_PROGRAM_ID, TOKEN_PROGRAM_ID]))).toBe(
+      "ATA_ADDRESS",
+    );
+  });
+
+  it("refuses transfers from another account, under Token-2022, or of another mint", () => {
+    const ata = associatedTokenAddress(wallet);
+    const vault = mockVault(primaryMarket);
+    const other = associatedTokenAddress(wallet, MOCK_OTHER_MINT);
+    const t = (program: string, data: number[], accts: string[]) => [...build.instructions, tokenIx(program, data, accts)];
+    expect(reject(t(TOKEN_PROGRAM_ID, [3, ...u64(1n)], [other, vault, wallet]), { maxUsdcOutBase: 10n ** 9n })).toBe(
+      "TOKEN_SOURCE",
+    );
+    expect(reject(t(TOKEN_2022_PROGRAM_ID, [3, ...u64(1n)], [ata, vault, wallet]), { maxUsdcOutBase: 10n ** 9n })).toBe(
+      "TOKEN_SOURCE",
+    );
+    expect(
+      reject(t(TOKEN_PROGRAM_ID, [12, ...u64(1n), 6], [ata, MOCK_OTHER_MINT, vault, wallet]), { maxUsdcOutBase: 10n ** 9n }),
+    ).toBe("TOKEN_MINT");
+    expect(
+      reject(t(TOKEN_PROGRAM_ID, [12, ...u64(1n), 6], [ata, USDC_MINT, vault, wallet]), { maxUsdcOutBase: 10n ** 9n }),
+    ).toBe("ACCEPTED");
+  });
+
+  it("simulation refuses a 'USDC account' whose owner isn't the user", async () => {
+    const chain = createMockChain();
+    const tx = assembleTransaction(build.instructions, build.recentBlockhash, wallet);
+    const fake = {
+      ...chain,
+      simulate: async (t: VersionedTransaction, addrs: string[]) => {
+        const r = await chain.simulate(t, addrs);
+        const data = Buffer.from(r.accounts[1]!.data);
+        new PublicKey(randomKey()).toBuffer().copy(data, 32); // owner field
+        r.accounts[1] = { ...r.accounts[1]!, data };
+        return r;
+      },
+    };
+    await expect(simulateAndCheck(fake, tx, wallet, ctx.maxUsdcOutBase)).rejects.toMatchObject({ code: "USDC_AUTHORITY" });
+    // A freshly created account (no pre-state) is checked too.
+    const fresh = { ...fake, getTokenAccounts: async () => [] };
+    await expect(simulateAndCheck(fresh, tx, wallet, ctx.maxUsdcOutBase)).rejects.toMatchObject({ code: "USDC_ACCOUNT" });
+  });
+});
+
+describe("B3-04: inner instructions (CPI) are checked against the allowlist", () => {
+  const withInner = (programs: string[] | null) => {
+    const chain = createMockChain();
+    return {
+      ...chain,
+      simulate: async (t: VersionedTransaction, addrs: string[]) => {
+        const r = await chain.simulate(t, addrs);
+        return { ...r, innerPrograms: programs === null ? null : [...(r.innerPrograms ?? []), ...programs] };
+      },
+    };
+  };
+  const tx = () => assembleTransaction(build.instructions, build.recentBlockhash, wallet);
+
+  it("the mock build's CPIs (Token, System) and a Panta self-CPI pass", async () => {
+    await expect(simulateAndCheck(withInner([MOCK_PROGRAM_ID]), tx(), wallet, ctx.maxUsdcOutBase, 0n, PROGRAMS)).resolves
+      .toBeTruthy();
+  });
+
+  it("a Panta program that CPIs into the Stake program (or anything else) is refused", async () => {
+    const STAKE = "Stake11111111111111111111111111111111111111";
+    await expect(simulateAndCheck(withInner([STAKE]), tx(), wallet, ctx.maxUsdcOutBase, 0n, PROGRAMS)).rejects
+      .toMatchObject({ code: "UNEXPECTED_CPI" });
+    await expect(simulateAndCheck(withInner([randomKey()]), tx(), wallet, ctx.maxUsdcOutBase, 0n, PROGRAMS)).rejects
+      .toMatchObject({ code: "UNEXPECTED_CPI" });
+    // Compute Budget is top-level only.
+    await expect(
+      simulateAndCheck(withInner(["ComputeBudget111111111111111111111111111111"]), tx(), wallet, ctx.maxUsdcOutBase, 0n, PROGRAMS),
+    ).rejects.toMatchObject({ code: "UNEXPECTED_CPI" });
+  });
+
+  it("fails closed when the RPC returns no inner instructions", async () => {
+    await expect(simulateAndCheck(withInner(null), tx(), wallet, ctx.maxUsdcOutBase, 0n, PROGRAMS)).rejects.toMatchObject({
+      code: "INNER_UNAVAILABLE",
+    });
+    expect(() => checkInnerPrograms(undefined, PROGRAMS)).toThrow(TxRejected);
+  });
+
+  it("reads parsed and compiled RPC shapes; refuses unreadable ones", () => {
+    const keys = [wallet, TOKEN_PROGRAM_ID, randomKey()];
+    expect(innerProgramIds([{ index: 0, instructions: [{ programIdIndex: 1 }, { programId: new PublicKey(SYSTEM_PROGRAM_ID) }] }], keys)).toEqual([
+      TOKEN_PROGRAM_ID,
+      SYSTEM_PROGRAM_ID,
+    ]);
+    expect(innerProgramIds([], keys)).toEqual([]);
+    for (const bad of [null, undefined, "x", [{ index: 0 }], [{ index: 0, instructions: [{ programIdIndex: 9 }] }], [{ index: 0, instructions: [{}] }]])
+      expect(() => innerProgramIds(bad, keys)).toThrow(TxRejected);
   });
 });

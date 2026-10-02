@@ -15,6 +15,8 @@ export type LandedTx = {
    * chain's own pre/post token balances (negative = received). null if unknown.
    */
   payerUsdcOutBase?: bigint | null;
+  /** Programs reached through CPI (meta.innerInstructions). null if unknown. */
+  innerPrograms?: string[] | null;
 };
 
 export type ConfirmationState = "confirmed" | "failed" | "pending" | "expired";

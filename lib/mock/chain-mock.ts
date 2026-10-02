@@ -19,6 +19,7 @@ import type { Chain, LandedTx } from "../chain";
 import type { PantaPosition, Side } from "../schemas";
 import {
   ATA_PROGRAM_ID,
+  SYSTEM_PROGRAM_ID,
   COMPUTE_BUDGET_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
@@ -109,7 +110,7 @@ class MockTxError extends Error {
 }
 
 /** Run a message against a ledger (mutates it). Throws MockTxError on failure. */
-function execute(l: Ledger, message: VersionedMessage): void {
+function execute(l: Ledger, message: VersionedMessage, inner: string[] = []): void {
   const decoded = TransactionMessage.decompile(message);
   const payer = decoded.payerKey.toBase58();
   let cuPrice = 0n;
@@ -125,8 +126,10 @@ function execute(l: Ledger, message: VersionedMessage): void {
       return;
     }
     if (program === ATA_PROGRAM_ID) {
+      inner.push(TOKEN_PROGRAM_ID); // the real ATA program CPIs Token (and System when it creates)
       const ata = key(1);
       if (!l.tokens.has(ata)) {
+        inner.push(SYSTEM_PROGRAM_ID);
         l.tokens.set(ata, { mint: key(3), owner: key(2), amount: 0n });
         debitLamports(l, key(0), TOKEN_ACCOUNT_RENT, i);
       }
@@ -142,6 +145,7 @@ function execute(l: Ledger, message: VersionedMessage): void {
       return;
     }
     if (program === MOCK_PROGRAM_ID) {
+      inner.push(TOKEN_PROGRAM_ID); // buy and claim move USDC through the Token program
       const disc = data.subarray(0, 8);
       const wallet = key(0);
       const market = key(1);
@@ -271,8 +275,9 @@ export function createMockChain(): MockChain {
     const usdcBefore = usdcOf(state, payer);
     const next = cloneLedger(state);
     let err: unknown = null;
+    const inner: string[] = [];
     try {
-      execute(next, message);
+      execute(next, message, inner);
       state.tokens = next.tokens;
       state.lamports = next.lamports;
       state.positions = next.positions;
@@ -280,7 +285,14 @@ export function createMockChain(): MockChain {
       err = e instanceof MockTxError ? { InstructionError: [e.index, e.reason] } : { error: String(e) };
     }
     const payerUsdcOutBase = usdcBefore - usdcOf(state, payer);
-    state.landed.set(signature, { err, message, signatures: [signature], simulated, payerUsdcOutBase });
+    state.landed.set(signature, {
+      err,
+      message,
+      signatures: [signature],
+      simulated,
+      payerUsdcOutBase,
+      innerPrograms: inner,
+    });
     return signature;
   }
 
@@ -302,18 +314,21 @@ export function createMockChain(): MockChain {
 
     async simulate(tx: VersionedTransaction, addresses: string[]): Promise<SimulationResult> {
       const next = cloneLedger(state);
+      const inner: string[] = [];
       try {
-        execute(next, tx.message);
+        execute(next, tx.message, inner);
       } catch (e) {
         return {
           err: { InstructionError: [(e as MockTxError).index, (e as MockTxError).reason] },
           logs: [],
           accounts: [],
+          innerPrograms: inner,
         };
       }
       return {
         err: null,
         logs: ["Program log: mock simulation"],
+        innerPrograms: inner,
         accounts: addresses.map((a) => {
           const t = next.tokens.get(a);
           if (t) return { data: encodeTokenAccount(t), lamports: Number(TOKEN_ACCOUNT_RENT) };
@@ -343,7 +358,13 @@ export function createMockChain(): MockChain {
     async getLandedTransaction(signature) {
       const t = state.landed.get(signature);
       return t
-        ? { err: t.err, message: t.message, signatures: t.signatures, payerUsdcOutBase: t.payerUsdcOutBase ?? 0n }
+        ? {
+            err: t.err,
+            message: t.message,
+            signatures: t.signatures,
+            payerUsdcOutBase: t.payerUsdcOutBase ?? 0n,
+            innerPrograms: t.innerPrograms ?? [],
+          }
         : null;
     },
 

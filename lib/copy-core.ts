@@ -66,6 +66,7 @@ import type { TradeSide } from "./trades";
 import {
   TxRejected,
   assembleTransaction,
+  checkInnerPrograms,
   checkInstructions,
   checkLandedPrograms,
   checkMessageShape,
@@ -405,7 +406,14 @@ async function assembleAndStore(
       claimMinUsdcInBase: a.claimMinUsdcInBase,
     });
     tx = assembleTransaction(a.instructions, a.recentBlockhash, a.wallet);
-    sim = await simulateAndCheck(d.chain, tx, a.wallet, a.maxUsdcOutBase, a.claimMinUsdcInBase ?? 0n);
+    sim = await simulateAndCheck(
+      d.chain,
+      tx,
+      a.wallet,
+      a.maxUsdcOutBase,
+      a.claimMinUsdcInBase ?? 0n,
+      d.pantaProgramIds,
+    );
   } catch (err) {
     if (err instanceof TxRejected) d.log?.(`${a.kind} build rejected: ${err.code}`);
     asRejection(err);
@@ -682,6 +690,18 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   try {
     checkLandedPrograms(landed.message, d.pantaProgramIds);
   } catch (err) {
+    asRejection(err);
+  }
+  // B3-04: every program the landed transaction reached through CPI must be allowlisted.
+  if (landed.innerPrograms === undefined || landed.innerPrograms === null) {
+    d.log?.(`${kind} confirm: no inner instructions for ${signature.slice(0, 8)}…`);
+    throw new AuthError(502, "VERIFY_UNAVAILABLE", "We couldn't verify the transaction yet. Try again shortly.");
+  }
+  try {
+    checkInnerPrograms(landed.innerPrograms, d.pantaProgramIds);
+  } catch (err) {
+    d.log?.(`ALERT ${kind} confirm UNEXPECTED_CPI for ${signature.slice(0, 8)}…`);
+    await d.copy.failOrder(order.id);
     asRejection(err);
   }
   if (landed.err !== null) {
