@@ -3331,6 +3331,35 @@ describe("H-04: F-02 is re-checked at confirm (landed token instructions; curren
     expect(down.res).toBe("OK");
   });
 
+  it("M-07b: a Token / Token-2022 batch (255) is never ignored: unknown -> refused pre-sign, pending (never recorded unchecked) at confirm", async () => {
+    const ata = Keypair.generate().publicKey.toBase58();
+    const keys = ["payer", TOKEN, ata, TOKEN22];
+    const batch = (pid: number) => ({ programIdIndex: pid, accounts: [2], data: bs58.encode(Buffer.from([255, 2, 4, 1, 0])) });
+    const ops = tokenAuthorityOps(
+      [{ instructions: [batch(1), batch(3), { programId: TOKEN22, parsed: { type: "batch", info: {} } }, { programId: TOKEN, accounts: [ata], data: bs58.encode(Buffer.from([255])) }] }],
+      keys,
+    );
+    expect(ops).toEqual(Array(4).fill({ type: "unknown", target: null }));
+    expect(() => checkTokenAuthorityOps(ops, ata)).toThrow(/token instruction/);
+    // Pre-sign: a simulated batch refuses the build (simulateAndCheck runs checkTokenAuthorityOps).
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const logs: string[] = [];
+    const simBatch = {
+      ...chain,
+      simulate: async (tx: VersionedTransaction, addrs: string[]) => ({ ...(await chain.simulate(tx, addrs)), tokenAuthorityOps: tokenAuthorityOps([{ instructions: [batch(1)] }], keys) }),
+    };
+    const pre = await code(quoteAndBuild(deps({ state, chain: simBatch, log: (m: string) => logs.push(m) }), u));
+    expect(pre).toBe("TX_REJECTED");
+    expect(state.orders.size).toBe(0);
+    // Confirm: a landed batch is unknown: pending, alerted once, not recorded, not failed.
+    const r = await confirmWith(withLanded(() => ({ tokenAuthorityOps: tokenAuthorityOps([{ instructions: [batch(1)] }], keys) })));
+    expect(r.res).toBe("VERIFY_UNAVAILABLE");
+    expect(r.state.copies.size).toBe(0);
+    expect(r.state.orders.get(r.b.orderId)?.status).toBe("pending");
+    expect(r.alerts.filter((m) => m.includes("TOKEN_UNKNOWN")).length).toBe(1);
+  });
+
   it("tokenAuthorityOps decodes compiled, partially decoded and jsonParsed Token/Token-2022 instructions", () => {
     const ata = Keypair.generate().publicKey.toBase58();
     const keys = ["payer", TOKEN, ata, TOKEN22, "other", "11111111111111111111111111111111"];

@@ -505,6 +505,8 @@ export function innerSystemOps(inner: unknown, accountKeys: readonly string[]): 
  */
 export type TokenAuthorityOp = { type: string; target: string | null };
 const TOKEN_AUTH_IX: Record<number, string> = { 4: "approve", 6: "setAuthority", 9: "closeAccount", 13: "approveChecked" };
+/** M-07b: p-token `batch` runs sub-instructions we don't decode: always "unknown" (refused). */
+const TOKEN_BATCH_IX = 255;
 const TOKEN_AUTH_PARSED: Record<string, string> = {
   approve: "source",
   approveChecked: "source",
@@ -528,6 +530,10 @@ export function tokenAuthorityOps(inner: unknown, accountKeys: readonly string[]
       const parsed = ix.parsed as { type?: unknown; info?: Record<string, unknown> } | undefined;
       if (parsed && typeof parsed === "object") {
         const type = typeof parsed.type === "string" ? parsed.type : "";
+        if (type === "batch") {
+          out.push({ type: "unknown", target: null }); // M-07b
+          continue;
+        }
         if (!(type in TOKEN_AUTH_PARSED)) continue;
         const target = parsed.info?.[TOKEN_AUTH_PARSED[type]];
         out.push(typeof target === "string" ? { type, target } : { type: "unknown", target: null });
@@ -542,6 +548,10 @@ export function tokenAuthorityOps(inner: unknown, accountKeys: readonly string[]
       }
       if (data.length < 1) {
         out.push({ type: "unknown", target: null });
+        continue;
+      }
+      if (data[0] === TOKEN_BATCH_IX) {
+        out.push({ type: "unknown", target: null }); // M-07b
         continue;
       }
       const type = TOKEN_AUTH_IX[data[0]];
