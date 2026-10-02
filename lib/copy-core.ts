@@ -818,7 +818,14 @@ async function verifyAndRecord(
   // landed in between. Look it up once more before calling it expired.
   if (state === "expired" && !(await d.chain.getLandedTransaction(signature))) {
     await d.copy.failOrder(order.id);
-    throw quoteExpired("The transaction expired before it landed. Nothing was spent. Refresh and try again.");
+    // F-04: carries the signature, so the client re-checks it (bounded) through the revive path in
+    // case it landed after all; the cron sweep doesn't revive failed orders.
+    throw new AuthError(
+      409,
+      "QUOTE_EXPIRED",
+      "The transaction expired before it landed, so nothing should have been spent. We're double-checking.",
+      { orderId: order.id, signature, revivable: true },
+    );
   }
   if (state === "pending") return { status: "pending", signature };
 
@@ -895,13 +902,24 @@ async function verifyAndRecord(
       : new AuthError(422, "PAYOUT_TOO_LOW", "This claim didn't pay your winnings to your wallet. It was not recorded.");
   }
   // Atomic in the DB (complete_order locks the row; UNIQUE order_id / signature back it up).
-  const result = await d.copy.completeOrder(order.id, owner.uid, signature, { allowFailed: revive });
+  let result = await d.copy.completeOrder(order.id, owner.uid, signature, { allowFailed: revive });
+  if (result === "not_pending" && !revive) {
+    // F-04: the order was failed concurrently (e.g. an expiry check racing this confirm) after we
+    // verified the landed transaction above. Every check passed for THIS signature, which is the
+    // only valid signature over the stored message, so record it through the revive path.
+    const now = await d.copy.getPendingOrder(order.id);
+    if (now?.status === "failed") {
+      d.log?.(`${kind} confirm: order failed concurrently; reviving verified ${signature.slice(0, 8)}…`);
+      result = await d.copy.completeOrder(order.id, owner.uid, signature, { allowFailed: true });
+    }
+  }
   if (result === "already_confirmed") {
     // A concurrent confirm of the same signature recorded it first: idempotent, no second record or report.
     return { status: "confirmed", signature, reported: await d.copy.isReported(order.id), simulated, kind };
   }
   if (result === "signature_used") throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
-  if (result === "not_pending") throw new AuthError(409, "ORDER_NOT_PENDING", "This order was already handled");
+  if (result === "not_pending")
+    throw new AuthError(409, "ORDER_NOT_PENDING", "This order was already handled", { orderId: order.id, signature, revivable: true });
 
   // Recorded. Now attribute it with Panta (idempotent per signature). A failure is
   // retried by the alerts cron (lib/report-retry.ts, B3-07).

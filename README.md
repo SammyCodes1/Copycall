@@ -205,6 +205,11 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    yet, confirm answers 502 `VERIFY_UNAVAILABLE` with `{orderId, signature}`; the browser keeps checking by signature
    (30 × 2 s), the broadcast signature stays checkable for 24 h, and the alerts cron verifies and records any broadcast
    order still pending after 60 s, with the same checks.
+   **Client recovery (F-04):** the browser knows the signature as soon as the wallet signs, so a lost response or
+   a 5xx is re-checked by signature. `QUOTE_EXPIRED` after a broadcast and `ORDER_NOT_PENDING` carry the signature;
+   the browser re-checks it through the revive path (every on-chain check runs again) at most 3 times, within the
+   30-check budget. If an order is failed concurrently after its landed transaction was verified, confirm records
+   it through the revive path instead of answering 409.
    **Report retries (B3-07):** a failed `POST /trades/` is retried by the alerts cron (`lib/report-retry.ts`):
    up to 5 attempts in total, at least 110 s × 2^(attempts − 1) apart, for 24 h. `TX_FEE_MISMATCH` and
    `TX_MISMATCH` log an `[ALERT]` and stop (Panta's own check disagrees with ours); `TX_FAILED` stops too.

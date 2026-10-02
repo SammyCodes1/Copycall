@@ -24,7 +24,7 @@ import {
   type FlowDeps,
 } from "@/lib/copy-core";
 import { authErrorResponse } from "@/lib/auth";
-import { CONFIRM_POLLS, FlowError, pollConfirm } from "@/components/tx-client";
+import { CONFIRM_POLLS, FlowError, REVIVE_TRIES, api, pollConfirm, type ConfirmStep } from "@/components/tx-client";
 import { ensureMockData, getDataStore, getUserDeps } from "@/lib/data";
 import { MOCK_PROGRAM_ID, getSharedMockChain } from "@/lib/mock/chain-mock";
 import {
@@ -1663,5 +1663,152 @@ describe("F-01: the wallet stays a plain System account (no Assign/Allocate, eve
     expect(unknown.state.orders.get(unknown.b.orderId)?.status).toBe("pending");
     const rpcDown = await confirmWith(landedWith(() => ({}), async () => Promise.reject(new Error("rpc down"))));
     expect(rpcDown.res).toBe("VERIFY_UNAVAILABLE");
+  });
+});
+
+describe("F-04: the shipped client re-checks by signature after a lost response, expiry or a 409", () => {
+  /** Route the real client `api()` through confirmOrder with these deps, like the browser would. */
+  const wire = (d: FlowDeps, u: User, opts: { dropFirstResponse?: boolean } = {}) => {
+    const bodies: Record<string, unknown>[] = [];
+    let calls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      let res: Response;
+      try {
+        res = Response.json(await confirmOrder(d, post("/api/copy/confirm", body, u), "copy"));
+      } catch (e) {
+        if (!(e instanceof AuthError)) throw e;
+        res = authErrorResponse(e);
+      }
+      if (calls++ === 0 && opts.dropFirstResponse) throw new TypeError("network down"); // server ran, response lost
+      return res;
+    }) as typeof fetch;
+    const postFn = (body: unknown) => api<ConfirmStep>("POST", "/api/copy/confirm", body).then((x) => x.data);
+    return { postFn, bodies, restore: () => (globalThis.fetch = realFetch) };
+  };
+  const signedFirst = async (d: FlowDeps, u: User) => {
+    const { b } = await quoteAndBuild(d, u);
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64")).signatures[0]);
+    return { b, sig, first: { orderId: b.orderId, signedTransaction } };
+  };
+
+  it("a lost response after broadcast: the client checks by the signature it already knows, and it's recorded", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const { b, sig, first } = await signedFirst(d, u);
+    const w = wire(d, u, { dropFirstResponse: true });
+    try {
+      const r = await pollConfirm(w.postFn, b.orderId, first, async () => {}, sig);
+      expect(r).toMatchObject({ status: "confirmed", signature: sig });
+      expect(w.bodies[1]).toEqual({ orderId: b.orderId, signature: sig });
+      expect(state.copies.size).toBe(1);
+    } finally {
+      w.restore();
+    }
+  });
+
+  it("expired-then-landed: QUOTE_EXPIRED carries the signature and the client revives it", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const chain = getSharedMockChain();
+    let hidden = true;
+    const d = deps({
+      state,
+      chain: {
+        ...chain,
+        waitForConfirmation: async (...a: Parameters<typeof chain.waitForConfirmation>) => (hidden ? "expired" : chain.waitForConfirmation(...a)),
+        getLandedTransaction: async (sig: string) => {
+          if (hidden) {
+            hidden = false; // the RPC catches up on the next look
+            return null;
+          }
+          return chain.getLandedTransaction(sig);
+        },
+      },
+    });
+    const { b, sig, first } = await signedFirst(d, u);
+    const w = wire(d, u);
+    try {
+      const r = await pollConfirm(w.postFn, b.orderId, first, async () => {}, sig);
+      expect(r.status).toBe("confirmed");
+      expect(w.bodies.map((x) => Object.keys(x).sort().join(","))).toEqual(["orderId,signedTransaction", "orderId,signature"]);
+      expect(state.copies.size).toBe(1);
+      expect(state.orders.get(b.orderId)?.status).toBe("confirmed");
+    } finally {
+      w.restore();
+    }
+  });
+
+  it("a truly expired transaction: the client re-checks at most REVIVE_TRIES times, then stops", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const chain = getSharedMockChain();
+    const d = deps({
+      state,
+      chain: { ...chain, send: async () => "x", waitForConfirmation: async () => "expired", getLandedTransaction: async () => null },
+    });
+    const { b, sig, first } = await signedFirst(d, u);
+    const w = wire(d, u);
+    try {
+      await expect(pollConfirm(w.postFn, b.orderId, first, async () => {}, sig)).rejects.toMatchObject({ code: "QUOTE_EXPIRED" });
+      expect(w.bodies.length).toBe(1 + REVIVE_TRIES);
+      expect(state.copies.size).toBe(0);
+    } finally {
+      w.restore();
+    }
+  });
+
+  it("an order failed concurrently after verification is still recorded (server), and 409s carry the signature", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const store = createMemoryCopyStore(state);
+    let raced = false;
+    const d = deps({
+      state,
+      copy: {
+        ...store,
+        completeOrder: async (...a: Parameters<typeof store.completeOrder>) => {
+          if (!raced) {
+            raced = true;
+            await store.failOrder(a[0]); // a parallel expiry check wins the race
+          }
+          return store.completeOrder(...a);
+        },
+      },
+    });
+    const { b, sig, first } = await signedFirst(d, u);
+    const r = await confirmOrder(d, post("/c", first, u), "copy");
+    expect(r).toMatchObject({ status: "confirmed", signature: sig });
+    expect(state.copies.size).toBe(1);
+    // The revivable codes carry the signature in the JSON body.
+    const body = await authErrorResponse(
+      new AuthError(409, "ORDER_NOT_PENDING", "x", { orderId: b.orderId, signature: sig, revivable: true }),
+    ).json();
+    expect(body).toMatchObject({ code: "ORDER_NOT_PENDING", signature: sig });
+  });
+
+  it("errors without a signature, TX_FAILED and pre-broadcast expiry are not retried", async () => {
+    let n = 0;
+    const fail = (e: FlowError) => async () => {
+      n++;
+      throw e;
+    };
+    await expect(pollConfirm(fail(new FlowError("QUOTE_EXPIRED", "Nothing was sent")), "o", {}, async () => {})).rejects.toMatchObject({ code: "QUOTE_EXPIRED" });
+    expect(n).toBe(1);
+    n = 0;
+    const sig = bs58.encode(Buffer.alloc(64, 4));
+    await expect(pollConfirm(fail(new FlowError("TX_FAILED", "x", sig)), "o", {}, async () => {}, sig)).rejects.toMatchObject({ code: "TX_FAILED" });
+    expect(n).toBe(1);
+    n = 0;
+    // A 5xx with no known signature isn't retried blindly; with one it's bounded by CONFIRM_POLLS.
+    await expect(pollConfirm(fail(new FlowError("ERROR", "x", undefined, 500)), "o", {}, async () => {})).rejects.toMatchObject({ code: "ERROR" });
+    expect(n).toBe(1);
+    n = 0;
+    await expect(pollConfirm(fail(new FlowError("ERROR", "x", undefined, 500)), "o", {}, async () => {}, sig)).rejects.toMatchObject({ code: "PENDING" });
+    expect(n).toBe(CONFIRM_POLLS + 1);
   });
 });
