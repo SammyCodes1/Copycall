@@ -74,7 +74,7 @@ values, which the app does not currently read (the browser never queries Supabas
 | `MIN_RESOLVED_CALLS` | Default 5 |
 | `CRON_SECRET` | >= 16 chars (use 32+). Cron routes need `Authorization: Bearer <CRON_SECRET>`; query-string secrets are refused |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` | Both needed for Telegram. If either is missing, alerts are written to the server log instead |
-| `MAX_STAKE_USDC` | Launch cap per copy in USDC, fee included (plain decimal, > 0, ≤ 6 dp, ≤ 1000). **Required in real mode**: missing, malformed or 0 refuses copies (503), never "no limit". Mock default 5. Enforced at quote, build, simulation and confirm; Settings shows it and can't save a stake above it. The DB bounds every order's limit and copy amount at 1000 (migration 0014) |
+| `MAX_STAKE_USDC` | Launch cap per copy in USDC, fee included (plain decimal, > 0, ≤ 6 dp, ≤ 1000). **Required in real mode**: missing, malformed or 0 refuses copies (503), never "no limit". Mock default 5. Enforced at quote, build, simulation and confirm; Settings shows it and can't save a stake above it. The DB bounds every order's limit and copy amount at 1000 (migration 0014) and a saved stake at 1000 (0016) |
 | `PANTA_PROGRAM_IDS` | Comma-separated Panta program ids for the transaction guard. Required in real mode: copy and claim fail closed (503) without it |
 
 ## Batch 2: sync, leaderboard, follow, alerts
@@ -259,9 +259,23 @@ crons (see Batch 2), open the copy link from the log, Review and sign, then visi
 1. Create a Supabase project. Apply the SQL in `supabase/migrations/` in order
    (Supabase CLI: `supabase db push`, or paste each file into the SQL editor).
    **Deploy order for an existing database:** apply migrations 0008 → 0013, then 0014 (stake
-   ceiling) and 0015 (sweep attempts / bounded re-sends), and only then deploy the app (the app
-   calls `claim_broadcast_sweep` / `note_send_attempt` and writes columns those migrations add).
-   Re-runs: 0012 and 0015 are safe to re-run. 0008, 0013 and 0014 are not (plain `add column` /
+   ceiling), 0015 (sweep attempts / bounded re-sends) and 0016 (user stake ceiling), and only then
+   deploy the app (the app calls `claim_broadcast_sweep` / `note_send_attempt` and writes columns
+   those migrations add).
+   **Pre-check before 0014 (H-06)**, which must return no rows:
+   ```sql
+   select id, kind, status, amount_usdc, max_usdc_out, created_at
+     from public.pending_orders
+    where (max_usdc_out is not null and max_usdc_out > 1000) or (kind = 'copy' and amount_usdc > 1000);
+   ```
+   0014 adds its ceilings `NOT VALID` and validates them only when that query is empty, so it never
+   fails on old rows; otherwise it logs a warning and the ceilings apply to new and updated rows only.
+   Any UPDATE of a listed row (complete or fail) then errors, so resolve those rows by hand first (they
+   predate the 1000 cap; there should be none), then run
+   `alter table public.pending_orders validate constraint pending_orders_max_usdc_out_ceiling;` and the
+   same for `pending_orders_copy_amount_ceiling`. 0016 clamps any saved `users.max_stake_usdc` above
+   1000 to 1000 (unusable anyway: the launch cap is ≤ 1000) before adding its ceiling.
+   Re-runs: 0012, 0014, 0015 and 0016 are safe to re-run. 0008 and 0013 are not (plain `add column` /
    `add constraint`; they error on a second run instead of changing anything), so apply each once.
    0008 was also edited after first release: a database that ran its first version is repaired by
    0012, not by re-running 0008.

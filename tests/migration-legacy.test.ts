@@ -177,3 +177,69 @@ describe("G-02 / G-03: claim_broadcast_sweep and note_send_attempt (0015)", () =
     await db.exec(`reset role`);
   }, 60_000);
 });
+
+describe("H-06: 0014 never fails on old rows above 1000; 0016 bounds the saved stake", () => {
+  const upTo = (db: PGlite, last: string) =>
+    (async () => {
+      for (const f of from8.filter((x) => x < last)) await db.exec(readFileSync(join(dir, f), "utf8"));
+    })();
+  const sql = (name: string) => readFileSync(join(dir, name), "utf8");
+  const valid = async (db: PGlite, con: string) =>
+    (await db.query<{ v: boolean }>(`select convalidated as v from pg_constraint where conname = $1`, [con])).rows[0]?.v;
+  const precheck = () => {
+    const readme = readFileSync(join(__dirname, "..", "README.md"), "utf8");
+    const m = /Pre-check before 0014[\s\S]*?```sql\n([\s\S]*?)```/.exec(readme);
+    expect(m).toBeTruthy();
+    return m![1].replace(/^ {3}/gm, "");
+  };
+
+  it("the auditor's PoF: a copy order above 1000 used to make 0014 fail; now it applies, NOT VALID, and the README pre-check lists it", async () => {
+    const db = await freshDb();
+    const { a, b } = await legacyRows(db);
+    await upTo(db, "20261002000014");
+    await db.query(`update public.pending_orders set max_usdc_out = 1500, amount_usdc = 1500 where id = $1`, [a]);
+    expect((await db.query<{ id: string }>(precheck())).rows.map((r) => r.id)).toEqual([a]);
+    await db.exec(sql("20261002000014_stake_ceiling.sql")); // used to throw "violated by some row"
+    expect(await valid(db, "pending_orders_max_usdc_out_ceiling")).toBe(false);
+    expect(await valid(db, "pending_orders_copy_amount_ceiling")).toBe(false);
+    // Still enforced for new and updated rows.
+    await expect(db.query(`update public.pending_orders set max_usdc_out = 1001, amount_usdc = 1001 where id = $1`, [b])).rejects.toThrow(
+      /ceiling/,
+    );
+    // Resolve the old row, then validate as the README says; re-running 0014 is harmless.
+    await db.query(`delete from public.pending_orders where id = $1`, [a]);
+    expect((await db.query(precheck())).rows).toEqual([]);
+    await db.exec(sql("20261002000014_stake_ceiling.sql"));
+    expect(await valid(db, "pending_orders_max_usdc_out_ceiling")).toBe(true);
+    expect(await valid(db, "pending_orders_copy_amount_ceiling")).toBe(true);
+  }, 60_000);
+
+  it("on a clean database 0014 validates at once and is re-runnable", async () => {
+    const db = await freshDb();
+    await legacyRows(db);
+    await upTo(db, "20261002000014");
+    await db.exec(sql("20261002000014_stake_ceiling.sql"));
+    await db.exec(sql("20261002000014_stake_ceiling.sql"));
+    expect(await valid(db, "pending_orders_max_usdc_out_ceiling")).toBe(true);
+    expect(
+      (await db.query(`select 1 from pg_constraint where conname like 'pending_orders_%_ceiling'`)).rows,
+    ).toHaveLength(2);
+  }, 60_000);
+
+  it("0016: a saved stake above 1000 is clamped, then 1000.01 is refused; re-runnable; other updates still work", async () => {
+    const db = await freshDb();
+    const { u } = await legacyRows(db);
+    await upTo(db, "20261002000016");
+    await db.query(`update public.users set max_stake_usdc = 999999 where id = $1`, [u]);
+    await db.exec(sql("20261002000016_user_stake_ceiling.sql"));
+    await db.exec(sql("20261002000016_user_stake_ceiling.sql"));
+    expect((await db.query<{ s: string }>(`select max_stake_usdc::text as s from public.users where id = $1`, [u])).rows[0].s).toBe(
+      "1000.00",
+    );
+    await expect(db.query(`update public.users set max_stake_usdc = 1000.01 where id = $1`, [u])).rejects.toThrow(
+      /users_max_stake_usdc_ceiling/,
+    );
+    await db.query(`update public.users set session_version = session_version + 1 where id = $1`, [u]);
+    expect(await valid(db, "users_max_stake_usdc_ceiling")).toBe(true);
+  }, 60_000);
+});
