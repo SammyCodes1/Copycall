@@ -5,9 +5,11 @@ Copycall ranks Panta traders by hit rate, lets you follow them, pings you when t
 buy, and lets you copy the call after a review screen, **signed by your own wallet**.
 Copying is never automatic. Copycall never holds funds or private keys.
 
-> Status: **batch 1** (scaffold, typed Panta client + mock fixtures, Supabase schema
-> with RLS, wallet login). Leaderboard sync, follow/settings, Telegram, copy and claim
-> flows come in later batches.
+> Status: **batches 1–3 done.** Wallet login, leaderboard sync, follow/settings,
+> Telegram alerts, copy review and sign, and positions with claim are built. The full
+> flow works end to end in **mock mode**. **Live mode against Panta has not been tested
+> yet** (no real quotes, builds or transactions so far), so treat real funds as unsupported
+> until it has been.
 
 ## Requirements
 
