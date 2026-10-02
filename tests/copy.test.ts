@@ -3667,3 +3667,26 @@ describe("L-01: 'provably past' needs isBlockhashValid=false AND a height above 
     });
   });
 });
+
+describe("M-03: PANTA_PROGRAM_IDS skew between build and confirm never fails a landed tx", () => {
+  it("built with Panta's program allowed, confirmed by an instance without it: recorded once, flagged UNKNOWN_PROGRAM, alerted, never 'Start again'", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const { b } = await quoteAndBuild(deps({ state }), u);
+    const alerts: string[] = [];
+    const skewed = deps({ state, pantaProgramIds: new Set(), alert: (m: string) => alerts.push(m) });
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const r = await confirmOrder(skewed, post("/c", { orderId: b.orderId, signedTransaction }, u), "copy");
+    expect(r.status).toBe("confirmed");
+    const warning = (r as { warning?: string }).warning ?? "";
+    expect(warning).toMatch(/flagged for review/);
+    expect(warning).not.toMatch(/nothing was (spent|sent)|start again|transaction rejected/i);
+    expect(state.copies.size).toBe(1);
+    expect(state.orders.get(b.orderId)?.status).toBe("confirmed");
+    expect(state.orders.get(b.orderId)?.reviewFlag?.split(",")).toContain("UNKNOWN_PROGRAM");
+    expect(alerts.join("\n")).toMatch(/UNKNOWN_PROGRAM.*PANTA_PROGRAM_IDS/);
+    // Idempotent: the same confirm again records nothing more.
+    expect(await code(confirmOrder(skewed, post("/c", { orderId: b.orderId, signedTransaction }, u), "copy"))).toBe("OK");
+    expect(state.copies.size).toBe(1);
+  });
+});

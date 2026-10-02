@@ -1196,15 +1196,17 @@ async function verifyAndRecord(
   if (landed.signatures[0] !== signature) await definitely(rejected("signature mismatch"));
   if (sha256Hex(landed.message.serialize()) !== order.messageHash)
     await definitely(rejected("it isn't the transaction we built for you"));
-  try {
-    checkLandedPrograms(landed.message, d.pantaProgramIds);
-  } catch (err) {
-    if (opts.definite) await d.copy.failOrder(order.id);
-    asRejection(err);
-  }
   if (landed.err !== null) {
     await d.copy.failOrder(order.id);
     throw new AuthError(422, "TX_FAILED", "Transaction failed on-chain. Nothing was copied.");
+  }
+  try {
+    checkLandedPrograms(landed.message, d.pantaProgramIds);
+  } catch (err) {
+    // M-03: the message hash matched the one we built and checked, so this only trips on
+    // PANTA_PROGRAM_IDS skew between build and confirm. It landed: record + flag, never fail.
+    if (!(err instanceof TxRejected)) throw verifyUnavailable(order.id, signature);
+    flag(err.code, `${err.message.slice(0, 120)} (PANTA_PROGRAM_IDS differs from the build's?)`);
   }
   // B3-04: every program the landed transaction reached through CPI must be allowlisted.
   if (landed.innerPrograms === undefined || landed.innerPrograms === null) {
