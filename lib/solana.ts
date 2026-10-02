@@ -155,8 +155,13 @@ export const rpcChain: Chain = {
       const st = value[0];
       if (st?.err) return "failed";
       if (st?.confirmationStatus === "confirmed" || st?.confirmationStatus === "finalized") return "confirmed";
-      if (lastValidBlockHeight !== null && (await conn.getBlockHeight("confirmed")) > lastValidBlockHeight)
+      if (lastValidBlockHeight !== null && (await conn.getBlockHeight("confirmed")) > lastValidBlockHeight) {
+        // B3-06: the tx may have landed between the two reads. Ask once more before saying expired.
+        const again = (await conn.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+        if (again?.err) return "failed";
+        if (again?.confirmationStatus === "confirmed" || again?.confirmationStatus === "finalized") return "confirmed";
         return "expired";
+      }
       await sleep(1000);
     }
     return "pending";

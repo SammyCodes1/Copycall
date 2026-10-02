@@ -70,9 +70,16 @@ export interface CopyStore {
   signatureUsed(signature: string): Promise<boolean>;
   /**
    * Atomically: pending -> confirmed with `signature`, and insert the copies
-   * (or claims) row. UNIQUE signatures make a reused signature fail.
+   * (or claims) row. UNIQUE signatures make a reused signature fail. With
+   * allowFailed, a failed order may be confirmed too (B3-06: re-verified on chain).
+   * The same order + signature twice returns already_confirmed and records nothing.
    */
-  completeOrder(orderId: string, userId: string, signature: string): Promise<CompleteResult>;
+  completeOrder(
+    orderId: string,
+    userId: string,
+    signature: string,
+    opts?: { allowFailed?: boolean },
+  ): Promise<CompleteResult>;
   failOrder(orderId: string): Promise<void>;
   /** After POST /trades/: copies.status = reported (claims: reported_at). */
   markReported(orderId: string): Promise<void>;

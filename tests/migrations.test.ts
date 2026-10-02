@@ -330,7 +330,7 @@ describe("supabase migrations", () => {
         await expect(asRole(role, () => db.query(`select * from public.${t}`))).rejects.toThrow(/permission denied/);
       }
       await expect(
-        asRole(role, () => db.query(`select public.complete_order(gen_random_uuid(), gen_random_uuid(), 's')`)),
+        asRole(role, () => db.query(`select public.complete_order(gen_random_uuid(), gen_random_uuid(), 's', true)`)),
       ).rejects.toThrow(/permission denied/);
     }
     await asRole("service_role", async () => {
@@ -396,6 +396,22 @@ describe("supabase migrations", () => {
       ).rows;
       expect(copies).toEqual([{ signature: "sigA", status: "confirmed" }]);
       expect((await db.query(`select 1 from public.claims where signature = 'sigC'`)).rows).toHaveLength(1);
+
+      // B3-06: a failed order is only confirmed when the caller re-verified it (p_allow_failed).
+      const f = await mk("copy");
+      await db.query(`update public.pending_orders set status = 'failed' where id = $1`, [f]);
+      const revive = (o: string, sig: string) =>
+        db
+          .query<{ r: string }>(`select public.complete_order($1, $2, $3, true) as r`, [o, u, sig])
+          .then((r) => r.rows[0].r);
+      expect(await complete(f, "sigF")).toBe("not_pending");
+      expect(await revive(f, "sigA")).toBe("signature_used");
+      // Concurrent confirms of one order: exactly one 'ok', one copies row.
+      const rs = await Promise.all([revive(f, "sigF"), revive(f, "sigF"), revive(f, "sigF2"), complete(f, "sigF")]);
+      expect(rs.filter((r) => r === "ok")).toHaveLength(1);
+      expect(rs.filter((r) => r !== "ok").every((r) => r === "already_confirmed" || r === "not_pending")).toBe(true);
+      expect((await db.query(`select 1 from public.copies where order_id = $1`, [f])).rows).toHaveLength(1);
+      expect(await revive(f, "sigF3")).toBe("not_pending");
       await expect(
         db.query(`update public.pending_orders set message_hash = 'nothex' where id = $1`, [b]),
       ).rejects.toThrow(/check/);

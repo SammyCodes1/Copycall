@@ -47,11 +47,14 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
     async signatureUsed(sig) {
       return used(sig);
     },
-    async completeOrder(orderId, userId, signature) {
+    async completeOrder(orderId, userId, signature, opts) {
+      // No await inside: runs to completion, like complete_order's row lock.
       const o = s.orders.get(orderId);
       if (!o || o.userId !== userId) return "not_pending";
       if (o.status === "confirmed") return o.signature === signature ? "already_confirmed" : "not_pending";
-      if (o.status !== "pending") return "not_pending";
+      if (o.status === "failed" && !opts?.allowFailed) return "not_pending";
+      if (o.status !== "pending" && o.status !== "failed") return "not_pending";
+      if ([...s.copies.values(), ...s.claims.values()].some((r) => r.orderId === orderId)) return "not_pending";
       if (used(signature)) return "signature_used";
       o.status = "confirmed";
       o.signature = signature;

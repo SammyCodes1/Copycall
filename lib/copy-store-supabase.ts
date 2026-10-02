@@ -128,11 +128,12 @@ export const supabaseCopyStore: CopyStore = {
     if (checks.some((c) => c.error)) fail("signature used");
     return checks.some((c) => (c.count ?? 0) > 0);
   },
-  async completeOrder(orderId, userId, signature) {
+  async completeOrder(orderId, userId, signature, opts) {
     const { data, error } = await getDb().rpc("complete_order", {
       p_order_id: orderId,
       p_user_id: userId,
       p_signature: signature,
+      p_allow_failed: opts?.allowFailed === true,
     });
     if (error) fail("complete order");
     return data as CompleteResult;

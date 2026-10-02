@@ -620,7 +620,10 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   if (order.status === "confirmed") {
     return { status: "confirmed", signature: order.signature!, reported: true, simulated: d.mock, kind };
   }
-  if (order.status === "failed")
+  // B3-06: a failed order (e.g. marked expired just as it landed) may be re-verified on chain
+  // by signature. Every landed-transaction check below runs again before anything is recorded.
+  const revive = order.status === "failed";
+  if (revive && !("signature" in body))
     throw new AuthError(409, "TX_FAILED", "This transaction failed. Nothing was recorded. Start again.");
 
   const now = nowSec(d);
@@ -670,7 +673,9 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   }
 
   const state = await d.chain.waitForConfirmation(signature, order.lastValidBlockHeight, d.confirmTimeoutMs ?? 20_000);
-  if (state === "expired") {
+  // B3-06: "expired" is decided from a block height read after the status read; the tx may have
+  // landed in between. Look it up once more before calling it expired.
+  if (state === "expired" && !(await d.chain.getLandedTransaction(signature))) {
     await d.copy.failOrder(order.id);
     throw quoteExpired("The transaction expired before it landed. Nothing was spent. Refresh and try again.");
   }
@@ -725,7 +730,12 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
       ? new AuthError(422, "OVER_LIMIT", "This transaction moved more USDC than you approved. It was not recorded.")
       : new AuthError(422, "PAYOUT_TOO_LOW", "This claim didn't pay your winnings to your wallet. It was not recorded.");
   }
-  const result = await d.copy.completeOrder(order.id, session.uid, signature);
+  // Atomic in the DB (complete_order locks the row; UNIQUE order_id / signature back it up).
+  const result = await d.copy.completeOrder(order.id, session.uid, signature, { allowFailed: revive });
+  if (result === "already_confirmed") {
+    // A concurrent confirm of the same signature recorded it first: idempotent, no second record or report.
+    return { status: "confirmed", signature, reported: false, simulated, kind };
+  }
   if (result === "signature_used") throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
   if (result === "not_pending") throw new AuthError(409, "ORDER_NOT_PENDING", "This order was already handled");
 

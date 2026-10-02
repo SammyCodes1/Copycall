@@ -165,7 +165,10 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    hash must match, the signature must verify for the session wallet and be unused. The server broadcasts,
    waits for confirmation, re-checks the landed transaction (including the USDC that actually left the wallet,
    from its pre/post token balances: above the stake, the order is failed and nothing is recorded), records the copy atomically
-   (`complete_order`), then reports it to Panta (`POST /trades/`).
+   (`complete_order`), then reports it to Panta (`POST /trades/`). Confirm is idempotent: `complete_order`
+   locks the order row and UNIQUE order/signature columns allow one record per order, so concurrent or repeated
+   confirms record once. Before calling a transaction expired, the server checks once more whether it landed;
+   an order failed that way can be re-verified by `{orderId, signature}` (every on-chain check runs again).
 4. `/positions` (`GET /api/positions`, 30 s cache) lists holdings from Panta's index; a resolved win shows
    Claim (`POST /api/claim/build` `{marketId}` then `/api/claim/confirm`), with no USDC allowed to leave. The
    claim must list the wallet's own USDC ATA, and both the simulation and the landed transaction must show it

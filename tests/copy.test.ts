@@ -3,6 +3,7 @@
  * Real signing with test keypairs against the mock chain, plus mock mode's
  * simulated signing.
  */
+import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -861,5 +862,104 @@ describe("B3-04: the landed transaction's CPIs are checked at confirm", () => {
     expect(await code(confirmOrder(d, req, "copy"))).toBe("VERIFY_UNAVAILABLE");
     expect(state.copies.size).toBe(0);
     expect(state.orders.get(b.orderId)?.status).toBe("pending");
+  });
+});
+
+describe("B3-06: confirm race, atomic and idempotent confirm", () => {
+  const chain = getSharedMockChain();
+
+  it("a tx that lands while we read 'expired' is still verified and recorded", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const racy = { ...chain, waitForConfirmation: async () => "expired" as const };
+    const d = deps({ state, chain: racy });
+    const { b } = await quoteAndBuild(d, u);
+    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await confirmOrder(d, req, "copy")).toMatchObject({ status: "confirmed" });
+    expect(state.copies.size).toBe(1);
+  });
+
+  it("an order marked failed by the race can be re-verified by signature, once", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    // The race: the status read missed it and the landed lookup came back empty, so it was failed.
+    let hide = true;
+    const racy = {
+      ...chain,
+      waitForConfirmation: async (sig: string, h: number | null, t: number) =>
+        hide ? ("expired" as const) : chain.waitForConfirmation(sig, h, t),
+      getLandedTransaction: async (sig: string) => (hide ? null : chain.getLandedTransaction(sig)),
+    };
+    const d = deps({ state, chain: racy });
+    const { b } = await quoteAndBuild(d, u);
+    const signed = sign(b.transaction, u.secretKey);
+    expect(await code(confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: signed }, u), "copy"))).toBe(
+      "QUOTE_EXPIRED",
+    );
+    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+    hide = false;
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signed, "base64")).signatures[0]);
+    // Re-sending signed bytes to a failed order is still refused; a signature lookup re-verifies on chain.
+    expect(await code(confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: signed }, u), "copy"))).toBe(
+      "TX_FAILED",
+    );
+    // A foreign signature can't revive it: the landed message must be the one we built.
+    const foreign = chain.landForeign(
+      new TransactionMessage({
+        payerKey: new PublicKey(u.wallet),
+        recentBlockhash: bs58.encode(Buffer.alloc(32, 7)),
+        instructions: [new TransactionInstruction({ programId: new PublicKey(MOCK_PROGRAM_ID), keys: [], data: Buffer.alloc(0) })],
+      }).compileToV0Message(),
+    );
+    expect(await code(confirmOrder(d, post("/c", { orderId: b.orderId, signature: foreign }, u), "copy"))).toBe(
+      "TX_REJECTED",
+    );
+    expect(state.copies.size).toBe(0);
+    expect(await confirmOrder(d, post("/c", { orderId: b.orderId, signature: sig }, u), "copy")).toMatchObject({
+      status: "confirmed",
+    });
+    expect(state.copies.size).toBe(1);
+    expect(await confirmOrder(d, post("/c", { orderId: b.orderId, signature: sig }, u), "copy")).toMatchObject({
+      status: "confirmed",
+    });
+    expect(state.copies.size).toBe(1);
+  });
+
+  it("concurrent confirms of one order record exactly one copy", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const { b } = await quoteAndBuild(d, u);
+    const signed = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signed, "base64")).signatures[0]);
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        code(
+          confirmOrder(
+            d,
+            post("/c", i % 2 ? { orderId: b.orderId, signature: sig } : { orderId: b.orderId, signedTransaction: signed }, u),
+            "copy",
+          ),
+        ),
+      ),
+    );
+    expect(results.filter((r) => r === "OK").length).toBeGreaterThanOrEqual(1);
+    for (const r of results) expect(["OK", "ORDER_NOT_PENDING", "SIGNATURE_USED", "QUOTE_EXPIRED"]).toContain(r);
+    expect(state.copies.size).toBe(1);
+    expect([...state.copies.values()][0].signature).toBe(sig);
+  });
+
+  it("the store refuses a second record for one order even if called directly", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const { b } = await quoteAndBuild(d, u);
+    const [x, y] = await Promise.all([
+      d.copy.completeOrder(b.orderId, u.userId, "sigX"),
+      d.copy.completeOrder(b.orderId, u.userId, "sigY"),
+    ]);
+    expect([x, y].sort()).toEqual(["not_pending", "ok"]);
+    expect(await d.copy.completeOrder(b.orderId, u.userId, "sigZ", { allowFailed: true })).toBe("not_pending");
+    expect(state.copies.size).toBe(1);
   });
 });
