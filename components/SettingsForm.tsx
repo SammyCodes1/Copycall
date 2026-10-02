@@ -78,6 +78,12 @@ export function SettingsForm({ initial, capUsdc }: { initial: Settings; capUsdc:
               USDC
             </span>
           </div>
+          {capUsdc !== null && Number(initial.maxStakeUsdc) > maxStake && (
+            <p role="alert" className="mt-1.5 text-xs leading-5 text-coral-400">
+              Your saved max stake ({initial.maxStakeUsdc} USDC) is above this server&apos;s limit of {capUsdc} USDC.
+              Copies are refused until you lower it.
+            </p>
+          )}
           <p id={`${id}-stake-help`} className="mt-1.5 text-xs leading-5 text-fg-subtle">
             {capUsdc !== null
               ? `1–${capUsdc} USDC (this server's limit per copy). Every copy is capped at this, whatever the leader bought.`

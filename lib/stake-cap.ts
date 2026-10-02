@@ -1,7 +1,8 @@
 /**
  * Launch cap (pure; no server-only so scripts and tests can use it).
- *  MAX_STAKE_USDC: the most USDC any single copy may move, fee included, whatever the
- *  user's saved max stake. Server-enforced at quote, build, simulation and confirm.
+ *  MAX_STAKE_USDC: the most USDC any single copy may move, fee included. Server-enforced at
+ *  quote, build, simulation and confirm. A saved max stake above it is refused at quote and
+ *  build (STAKE_ABOVE_CAP, H-05), never silently clamped; only confirm clamps the limit.
  *  - Real mode: REQUIRED. Missing, malformed, zero or above STAKE_CAP_CEILING_USDC
  *    fails closed (copies answer 503); it never falls back to "no limit".
  *  - Mock mode: defaults to 5 when unset (a bad value is still an error).

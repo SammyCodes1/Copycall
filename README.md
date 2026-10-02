@@ -74,7 +74,7 @@ values, which the app does not currently read (the browser never queries Supabas
 | `MIN_RESOLVED_CALLS` | Default 5 |
 | `CRON_SECRET` | >= 16 chars (use 32+). Cron routes need `Authorization: Bearer <CRON_SECRET>`; query-string secrets are refused |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` | Both needed for Telegram. If either is missing, alerts are written to the server log instead |
-| `MAX_STAKE_USDC` | Launch cap per copy in USDC, fee included (plain decimal, > 0, ≤ 6 dp, ≤ 1000). **Required in real mode**: missing, malformed or 0 refuses copies (503), never "no limit". Mock default 5. Enforced at quote, build, simulation and confirm; Settings shows it and can't save a stake above it. The DB bounds every order's limit and copy amount at 1000 (migration 0014) and a saved stake at 1000 (0016) |
+| `MAX_STAKE_USDC` | Launch cap per copy in USDC, fee included (plain decimal, > 0, ≤ 6 dp, ≤ 1000). **Required in real mode**: missing, malformed or 0 refuses copies (503), never "no limit". Mock default 5. Enforced at quote, build, simulation and confirm; Settings shows it and can't save a stake above it; a stake saved above it earlier is refused at quote and build (422 `STAKE_ABOVE_CAP`, "lower it in Settings"), not clamped, and Settings says so. The DB bounds every order's limit and copy amount at 1000 (migration 0014) and a saved stake at 1000 (0016) |
 | `PANTA_PROGRAM_IDS` | Comma-separated Panta program ids for the transaction guard. Required in real mode: copy and claim fail closed (503) without it |
 
 ## Batch 2: sync, leaderboard, follow, alerts
