@@ -51,7 +51,7 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
     },
 
     async createPendingOrder(o) {
-      const row: PendingOrder = { ...o, id: randomUUID(), status: "pending", signature: null };
+      const row: PendingOrder = { ...o, id: randomUUID(), status: "pending", signature: null, broadcastSignature: null };
       s.orders.set(row.id, row);
       return { ...row };
     },
@@ -108,6 +108,20 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
     async failOrder(orderId) {
       const o = s.orders.get(orderId);
       if (o && o.status === "pending") o.status = "failed";
+    },
+    async noteBroadcast(orderId, signature) {
+      const o = s.orders.get(orderId);
+      if (o && o.status === "pending" && o.broadcastSignature === null) o.broadcastSignature = signature;
+    },
+    async listBroadcastPending(p) {
+      return [...s.orders.values()]
+        .filter(
+          (o) =>
+            o.status === "pending" && o.broadcastSignature !== null && o.createdAt < p.createdBefore && o.createdAt > p.createdAfter,
+        )
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(0, Math.min(Math.max(p.limit, 0), 100))
+        .map((o) => ({ ...o }));
     },
     async markReported(orderId) {
       const at = nowSec();

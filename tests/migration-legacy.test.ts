@@ -95,6 +95,10 @@ describe("E-05: legacy pending copy orders across migration 0008", () => {
       "failed",
     );
     expect(await complete(db, c, u, "legacySigC")).toBe("ok"); // claims untouched (max_usdc_out null is allowed)
+    // E-02: broadcast_signature must look like a base58 signature.
+    await expect(db.query(`update public.pending_orders set broadcast_signature = 'x; drop' where id = $1`, [b])).rejects.toThrow(
+      /check/,
+    );
     // E-10: a copy's amount can't exceed its cap.
     await expect(db.query(`update public.pending_orders set amount_usdc = 6 where id = $1`, [b])).rejects.toThrow(
       /pending_orders_copy_within_cap/,

@@ -29,7 +29,7 @@ const exact = (v: unknown) => usdcExact(exactBase(v));
 const ORDER_COLS =
   "id, user_id, wallet, kind, leader_trade_id, market_id, side, amount_usdc::text, fee_usdc::text, fee_model, " +
   "max_usdc_out::text, shares::text, quote_id, panta_order_id, message_hash, message_base64, " +
-  "last_valid_block_height::text, created_at, expires_at, status, signature";
+  "last_valid_block_height::text, created_at, expires_at, status, signature, broadcast_signature";
 
 function fail(what: string): never {
   throw new Error(`Database error: ${what}`);
@@ -57,6 +57,7 @@ type OrderRow = {
   expires_at: string;
   status: PendingOrder["status"];
   signature: string | null;
+  broadcast_signature?: string | null;
 };
 
 function toOrder(r: OrderRow): PendingOrder {
@@ -85,6 +86,7 @@ function toOrder(r: OrderRow): PendingOrder {
     expiresAt: sec(r.expires_at),
     status: r.status,
     signature: r.signature,
+    broadcastSignature: r.broadcast_signature ?? null,
   };
 }
 
@@ -168,6 +170,28 @@ export const supabaseCopyStore: CopyStore = {
       .eq("id", orderId)
       .eq("status", "pending");
     if (error) fail("fail order");
+  },
+  async noteBroadcast(orderId, signature) {
+    const { error } = await getDb()
+      .from("pending_orders")
+      .update({ broadcast_signature: signature })
+      .eq("id", orderId)
+      .eq("status", "pending")
+      .is("broadcast_signature", null);
+    if (error) fail("note broadcast");
+  },
+  async listBroadcastPending(p) {
+    const { data, error } = await getDb()
+      .from("pending_orders")
+      .select(ORDER_COLS)
+      .eq("status", "pending")
+      .not("broadcast_signature", "is", null)
+      .lt("created_at", iso(p.createdBefore))
+      .gt("created_at", iso(p.createdAfter))
+      .order("created_at", { ascending: true })
+      .limit(Math.min(Math.max(p.limit, 0), 100));
+    if (error) fail("list broadcast pending");
+    return ((data ?? []) as unknown as OrderRow[]).map(toOrder);
   },
   async markReported(orderId) {
     const db = getDb();

@@ -31,9 +31,11 @@ export type PendingOrder = {
   expiresAt: number; // after this we refuse to broadcast a signed tx
   status: "pending" | "confirmed" | "failed";
   signature: string | null;
+  /** E-02: the signature we broadcast (set before sending). Not unique; `signature` is set on confirm. */
+  broadcastSignature: string | null;
 };
 
-export type PendingOrderInsert = Omit<PendingOrder, "id" | "status" | "signature">;
+export type PendingOrderInsert = Omit<PendingOrder, "id" | "status" | "signature" | "broadcastSignature">;
 
 export type CompleteResult = "ok" | "already_confirmed" | "signature_used" | "not_pending";
 
@@ -94,6 +96,10 @@ export interface CopyStore {
     opts?: { allowFailed?: boolean },
   ): Promise<CompleteResult>;
   failOrder(orderId: string): Promise<void>;
+  /** E-02: remember the signature we are about to broadcast (pending orders only, first one wins). */
+  noteBroadcast(orderId: string, signature: string): Promise<void>;
+  /** E-02: pending orders with a broadcast signature, created in (createdAfter, createdBefore). */
+  listBroadcastPending(p: { limit: number; createdBefore: number; createdAfter: number }): Promise<PendingOrder[]>;
   /** After POST /trades/: copies.status = reported, reported_at = now (claims: reported_at). */
   markReported(orderId: string): Promise<void>;
   /** Has the copy/claim recorded for this order been reported to Panta? */

@@ -44,7 +44,7 @@ export async function getSession(): Promise<SessionPayload | null> {
 /** Uniform JSON error response. Never includes stack traces or env values. */
 export function authErrorResponse(err: unknown): NextResponse {
   if (err instanceof AuthError) {
-    return NextResponse.json({ code: err.code, message: err.message }, { status: err.status });
+    return NextResponse.json({ ...err.details, code: err.code, message: err.message }, { status: err.status });
   }
   console.error("[auth] unexpected error", err instanceof Error ? err.message : err);
   return NextResponse.json({ code: "INTERNAL_ERROR", message: "Something went wrong" }, { status: 500 });

@@ -176,6 +176,10 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    locks the order row and UNIQUE order/signature columns allow one record per order, so concurrent or repeated
    confirms record once. Before calling a transaction expired, the server checks once more whether it landed;
    an order failed that way can be re-verified by `{orderId, signature}` (every on-chain check runs again).
+   The signature is stored on the order **before** broadcasting (E-02). If the landed transaction can't be verified
+   yet, confirm answers 502 `VERIFY_UNAVAILABLE` with `{orderId, signature}`; the browser keeps checking by signature
+   (30 × 2 s), the broadcast signature stays checkable for 24 h, and the alerts cron verifies and records any broadcast
+   order still pending after 60 s, with the same checks.
    **Report retries (B3-07):** a failed `POST /trades/` is retried by the alerts cron (`lib/report-retry.ts`):
    up to 5 attempts in total, at least 110 s × 2^(attempts − 1) apart, for 24 h. `TX_FEE_MISMATCH` and
    `TX_MISMATCH` log an `[ALERT]` and stop (Panta's own check disagrees with ours); `TX_FAILED` stops too.

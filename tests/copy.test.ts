@@ -20,8 +20,11 @@ import {
   myPositions,
   quoteCopy,
   resetFeeModelAlerts,
+  sweepBroadcastOrders,
   type FlowDeps,
 } from "@/lib/copy-core";
+import { authErrorResponse } from "@/lib/auth";
+import { CONFIRM_POLLS, FlowError, pollConfirm } from "@/components/tx-client";
 import { ensureMockData, getDataStore, getUserDeps } from "@/lib/data";
 import { MOCK_PROGRAM_ID, getSharedMockChain } from "@/lib/mock/chain-mock";
 import {
@@ -1149,5 +1152,131 @@ describe("D-05: a fee-on-top shape against the pin alerts; old cached views are 
     const q = await quoteCopy(d, get("/q", u), trade.id);
     expect(q.quoteToken).not.toBe("old");
     expect(q).toHaveProperty("feeModel");
+  });
+});
+
+describe("E-02: a landed copy is never left unrecorded after VERIFY_UNAVAILABLE", () => {
+  const chain = getSharedMockChain();
+  /** Landed lookups hide the token balances while `blind` is true (RPC meta lag). */
+  const lagging = (state: { blind: boolean }) => ({
+    ...chain,
+    getLandedTransaction: async (sig: string) => {
+      const t = await chain.getLandedTransaction(sig);
+      return t && (state.blind ? { ...t, payerUsdcOutBase: null } : t);
+    },
+  });
+
+  it("the 502 body carries orderId and signature; retries by signature or signed bytes work after expiry", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const lag = { blind: true };
+    const d = deps({ state, chain: lagging(lag) });
+    const { b } = await quoteAndBuild(d, u);
+    const signed = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signed, "base64")).signatures[0]);
+    let err: unknown;
+    try {
+      await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: signed }, u), "copy");
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(AuthError);
+    const res = authErrorResponse(err);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ code: "VERIFY_UNAVAILABLE", orderId: b.orderId, signature: sig, retryable: true });
+    expect(state.orders.get(b.orderId)).toMatchObject({ status: "pending", broadcastSignature: sig });
+
+    // Past the 90 s build window: re-sending the same signed bytes is a lookup, not "Nothing was sent".
+    const late = deps({ state, chain: lagging(lag), nowMs: () => Date.now() + 120_000 });
+    expect(await code(confirmOrder(late, post("/c", { orderId: b.orderId, signedTransaction: signed }, u), "copy"))).toBe(
+      "VERIFY_UNAVAILABLE",
+    );
+    // Past the 15 min lookup window: our own broadcast signature is still accepted.
+    lag.blind = false;
+    const later = deps({ state, chain: lagging(lag), nowMs: () => Date.now() + 20 * 60_000 });
+    expect(await confirmOrder(later, post("/c", { orderId: b.orderId, signature: sig }, u), "copy")).toMatchObject({
+      status: "confirmed",
+    });
+    expect(state.copies.size).toBe(1);
+    // ... but a signature we never broadcast still gets the normal 15 min window.
+    const { b: b2 } = await quoteAndBuild(deps({ state }), u);
+    expect(
+      await code(confirmOrder(later, post("/c", { orderId: b2.orderId, signature: bs58.encode(Buffer.alloc(64, 9)) }, u), "copy")),
+    ).toBe("ORDER_EXPIRED");
+  });
+
+  it("the cron sweep records a broadcast copy the browser gave up on, exactly once", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const lag = { blind: true };
+    const d = deps({ state, chain: lagging(lag) });
+    const { b } = await quoteAndBuild(d, u);
+    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await code(confirmOrder(d, req, "copy"))).toBe("VERIFY_UNAVAILABLE");
+    // Too fresh for the sweep (the browser is still polling).
+    expect((await sweepBroadcastOrders(d)).checked).toBe(0);
+    const later = deps({ state, chain: lagging(lag), nowMs: () => Date.now() + 5 * 60_000 });
+    expect(await sweepBroadcastOrders(later)).toMatchObject({ checked: 1, unavailable: 1 });
+    lag.blind = false;
+    expect(await sweepBroadcastOrders(later)).toMatchObject({ checked: 1, confirmed: 1 });
+    expect(state.copies.size).toBe(1);
+    expect(await sweepBroadcastOrders(later)).toMatchObject({ checked: 0 });
+    expect(state.copies.size).toBe(1);
+  });
+
+  it("the sweep applies every on-chain check (a tampered landed tx is not recorded)", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const lag = { blind: true };
+    const d = deps({ state, chain: lagging(lag) });
+    const { b } = await quoteAndBuild(d, u);
+    await code(confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u), "copy"));
+    const over = {
+      ...chain,
+      getLandedTransaction: async (sig: string) => {
+        const t = await chain.getLandedTransaction(sig);
+        return t && { ...t, payerUsdcOutBase: (t.payerUsdcOutBase ?? 0n) + 1n };
+      },
+    };
+    const later = deps({ state, chain: over, nowMs: () => Date.now() + 5 * 60_000 });
+    expect(await sweepBroadcastOrders(later)).toMatchObject({ checked: 1, failed: 1 });
+    expect(state.copies.size).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+  });
+
+  it("the client keeps polling through VERIFY_UNAVAILABLE, bounded", async () => {
+    const sig = bs58.encode(Buffer.alloc(64, 3));
+    const unavailable = () => new FlowError("VERIFY_UNAVAILABLE", "later", sig);
+    let n = 0;
+    const done = await pollConfirm(
+      async () => {
+        if (++n < 4) throw unavailable();
+        return { status: "confirmed", signature: sig, reported: true, simulated: false };
+      },
+      "o1",
+      { orderId: "o1" },
+      async () => {},
+    );
+    expect(done.status).toBe("confirmed");
+    expect(n).toBe(4);
+    n = 0;
+    await expect(
+      pollConfirm(
+        async () => {
+          n++;
+          throw unavailable();
+        },
+        "o1",
+        {},
+        async () => {},
+      ),
+    ).rejects.toMatchObject({ code: "PENDING" });
+    expect(n).toBe(CONFIRM_POLLS + 1);
+    // Other errors stop at once; a 502 without a signature isn't retried blindly.
+    await expect(pollConfirm(async () => Promise.reject(new FlowError("TX_FAILED", "x")), "o1", {}, async () => {})).rejects
+      .toMatchObject({ code: "TX_FAILED" });
+    await expect(
+      pollConfirm(async () => Promise.reject(new FlowError("VERIFY_UNAVAILABLE", "x")), "o1", {}, async () => {}),
+    ).rejects.toMatchObject({ code: "VERIFY_UNAVAILABLE" });
   });
 });

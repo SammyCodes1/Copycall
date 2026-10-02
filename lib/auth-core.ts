@@ -21,6 +21,8 @@ export class AuthError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** Extra non-secret fields for the JSON body (e.g. orderId/signature on VERIFY_UNAVAILABLE). */
+    readonly details?: Record<string, string | boolean>,
   ) {
     super(message);
     this.name = "AuthError";

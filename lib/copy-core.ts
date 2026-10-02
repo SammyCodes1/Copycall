@@ -91,6 +91,8 @@ const QUOTE_EXPIRY_MARGIN_SEC = 10;
 export const ORDER_TTL_SEC = 90;
 /** A signature-only retry is accepted this long after the build. */
 export const ORDER_LOOKUP_SEC = 15 * 60;
+/** E-02: a signature we broadcast ourselves stays checkable this long (the RPC keeps tx history). */
+export const BROADCAST_LOOKUP_SEC = 24 * 60 * 60;
 
 export type FlowPanta = {
   quotePrimaryOrder(req: QuoteRequest): Promise<QuoteResponse>;
@@ -419,6 +421,7 @@ async function assembleAndStore(
       | "lastValidBlockHeight"
       | "createdAt"
       | "expiresAt"
+      | "broadcastSignature"
     >;
   },
 ): Promise<BuiltTx> {
@@ -665,7 +668,6 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   let simulated = false;
 
   if ("signedTransaction" in body) {
-    if (now > order.expiresAt) throw quoteExpired("Quote expired, refresh. Nothing was sent.");
     let tx: VersionedTransaction;
     try {
       tx = VersionedTransaction.deserialize(Buffer.from(body.signedTransaction, "base64"));
@@ -679,19 +681,28 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
       throw rejected("it isn't signed by your wallet. Nothing was sent.");
     }
     signature = bs58.encode(tx.signatures[0]);
-    if (await d.copy.signatureUsed(signature))
-      throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
-    try {
-      await d.chain.send(tx.serialize());
-    } catch (err) {
-      const m = err instanceof Error ? err.message : "";
-      if (!/already (been )?processed/i.test(m)) {
-        d.log?.(`${kind} broadcast failed: ${m.slice(0, 200)}`);
-        throw rejected("the network refused it. Nothing was spent.");
+    if (order.broadcastSignature === signature) {
+      // E-02: already broadcast once; never say "Nothing was sent" now. Just look it up again.
+    } else {
+      if (now > order.expiresAt) throw quoteExpired("Quote expired, refresh. Nothing was sent.");
+      if (await d.copy.signatureUsed(signature))
+        throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
+      // E-02: remember the signature BEFORE broadcasting, so a lost response can still be confirmed.
+      await d.copy.noteBroadcast(order.id, signature);
+      try {
+        await d.chain.send(tx.serialize());
+      } catch (err) {
+        const m = err instanceof Error ? err.message : "";
+        if (!/already (been )?processed/i.test(m)) {
+          d.log?.(`${kind} broadcast failed: ${m.slice(0, 200)}`);
+          throw rejected("the network refused it. Nothing was spent.");
+        }
       }
     }
   } else if ("signature" in body) {
-    if (now > order.createdAt + ORDER_LOOKUP_SEC)
+    // E-02: the signature we broadcast stays checkable while the tx is retrievable.
+    const window = body.signature === order.broadcastSignature ? BROADCAST_LOOKUP_SEC : ORDER_LOOKUP_SEC;
+    if (now > order.createdAt + window)
       throw new AuthError(409, "ORDER_EXPIRED", "This order is too old to confirm. Start again.");
     signature = body.signature;
     if (await d.copy.signatureUsed(signature))
@@ -705,7 +716,31 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     signature = await d.chain.simulateSignAndSend(Buffer.from(order.messageBase64, "base64"));
     simulated = true;
   }
+  return verifyAndRecord(d, order, { uid: session.uid, wallet: session.w }, signature, { simulated, revive });
+}
 
+/** VERIFY_UNAVAILABLE carries what the client needs to keep checking (E-02). */
+function verifyUnavailable(orderId: string, signature: string): AuthError {
+  return new AuthError(502, "VERIFY_UNAVAILABLE", "We couldn't verify the transaction yet. We'll keep checking.", {
+    orderId,
+    signature,
+    retryable: true,
+  });
+}
+
+/**
+ * Wait for the tx, verify it ON CHAIN (never trust what the client sent) and
+ * record it atomically. Shared by confirm and the pending-order sweep (E-02).
+ */
+async function verifyAndRecord(
+  d: FlowDeps,
+  order: PendingOrder,
+  owner: { uid: string; wallet: string },
+  signature: string,
+  opts: { simulated: boolean; revive: boolean },
+): Promise<ConfirmResult> {
+  const { kind } = order;
+  const { simulated, revive } = opts;
   const state = await d.chain.waitForConfirmation(signature, order.lastValidBlockHeight, d.confirmTimeoutMs ?? 20_000);
   // B3-06: "expired" is decided from a block height read after the status read; the tx may have
   // landed in between. Look it up once more before calling it expired.
@@ -715,11 +750,10 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   }
   if (state === "pending") return { status: "pending", signature };
 
-  // ---- verify ON CHAIN; never trust what the client sent ----
   const landed = await d.chain.getLandedTransaction(signature);
   if (!landed) return { status: "pending", signature };
   try {
-    checkMessageShape(landed.message, session.w); // signer / fee payer == session wallet
+    checkMessageShape(landed.message, owner.wallet); // signer / fee payer == the order's wallet
   } catch {
     throw rejected("it wasn't signed by your wallet");
   }
@@ -738,7 +772,7 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   // B3-04: every program the landed transaction reached through CPI must be allowlisted.
   if (landed.innerPrograms === undefined || landed.innerPrograms === null) {
     d.log?.(`${kind} confirm: no inner instructions for ${signature.slice(0, 8)}…`);
-    throw new AuthError(502, "VERIFY_UNAVAILABLE", "We couldn't verify the transaction yet. Try again shortly.");
+    throw verifyUnavailable(order.id, signature);
   }
   try {
     checkInnerPrograms(landed.innerPrograms, d.pantaProgramIds);
@@ -752,7 +786,7 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   const moved = landed.payerUsdcOutBase;
   if (moved === undefined || moved === null) {
     d.log?.(`${kind} confirm: no token balances for ${signature.slice(0, 8)}…`);
-    throw new AuthError(502, "VERIFY_UNAVAILABLE", "We couldn't verify the transaction yet. Try again shortly.");
+    throw verifyUnavailable(order.id, signature);
   }
   // Orders built before max_usdc_out existed: a copy's amount was its full limit; claims never pay out.
   const limit =
@@ -766,7 +800,7 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
       : new AuthError(422, "PAYOUT_TOO_LOW", "This claim didn't pay your winnings to your wallet. It was not recorded.");
   }
   // Atomic in the DB (complete_order locks the row; UNIQUE order_id / signature back it up).
-  const result = await d.copy.completeOrder(order.id, session.uid, signature, { allowFailed: revive });
+  const result = await d.copy.completeOrder(order.id, owner.uid, signature, { allowFailed: revive });
   if (result === "already_confirmed") {
     // A concurrent confirm of the same signature recorded it first: idempotent, no second record or report.
     return { status: "confirmed", signature, reported: await d.copy.isReported(order.id), simulated, kind };
@@ -781,13 +815,49 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
       kind,
       orderId: order.id,
       signature,
-      wallet: session.w,
+      wallet: owner.wallet,
       marketId: order.marketId,
       quoteId: order.quoteId,
       attempts: 1,
     })) === "reported";
-  await d.copy.cacheDelete(`positions:${session.w}`);
+  await d.copy.cacheDelete(`positions:${owner.wallet}`);
   return { status: "confirmed", signature, reported, simulated, kind };
+}
+
+export const SWEEP = { limit: 20, minAgeSec: 60 };
+export type SweepSummary = { checked: number; confirmed: number; pending: number; failed: number; unavailable: number };
+
+/**
+ * E-02 cron step: pending orders whose signature we broadcast but never
+ * verified (lost response, VERIFY_UNAVAILABLE, closed tab) are verified and
+ * recorded server-side, with exactly the checks confirm runs.
+ */
+export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
+  const now = nowSec(d);
+  const orders = await d.copy.listBroadcastPending({
+    limit: SWEEP.limit,
+    createdBefore: now - SWEEP.minAgeSec,
+    createdAfter: now - BROADCAST_LOOKUP_SEC,
+  });
+  const out: SweepSummary = { checked: orders.length, confirmed: 0, pending: 0, failed: 0, unavailable: 0 };
+  for (const o of orders) {
+    if (!o.broadcastSignature) continue;
+    try {
+      const r = await verifyAndRecord(
+        { ...d, confirmTimeoutMs: 0 },
+        o,
+        { uid: o.userId, wallet: o.wallet },
+        o.broadcastSignature,
+        { simulated: false, revive: false },
+      );
+      out[r.status === "confirmed" ? "confirmed" : "pending"]++;
+    } catch (err) {
+      if (err instanceof AuthError && err.code === "VERIFY_UNAVAILABLE") out.unavailable++;
+      else out.failed++;
+      d.log?.(`sweep ${o.kind} ${o.id.slice(0, 8)}: ${err instanceof AuthError ? err.code : "error"}`);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- positions
