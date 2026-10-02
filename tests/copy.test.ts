@@ -42,7 +42,7 @@ import * as panta from "@/lib/panta";
 import { USDC_MINT, associatedTokenAddress, baseToUsdc, usdcToBase } from "@/lib/solana-constants";
 import type { StoredTrade } from "@/lib/data-store";
 import type { LandedTx } from "@/lib/chain";
-import { checkInnerSystemOps, innerSystemOps, type SimulationResult } from "@/lib/tx-guard";
+import { checkInnerSystemOps, checkWalletAccount, innerSystemOps, type SimulationResult } from "@/lib/tx-guard";
 import { ED25519_L } from "@/lib/ed25519";
 import type { PendingOrder } from "@/lib/copy-store";
 import { apiRequest, signedInUser } from "./helpers/session";
@@ -1667,6 +1667,25 @@ describe("F-01: the wallet stays a plain System account (no Assign/Allocate, eve
     const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
     return { res: await code(confirmOrder(d, req, "copy")), state, b, alerts };
   };
+
+  it("H-01 simulation: a null wallet entry is refused, even when the wallet holds <= 0.02 SOL", async () => {
+    const poor = {
+      ...simWith((s) => ({ ...s, accounts: s.accounts.map((a, i) => (i === 0 ? null : a)) })),
+      getLamports: async () => 10_000_000, // 0.01 SOL: the SOL-spend limit alone would let it through
+    };
+    const r = await buildWith(poor);
+    expect(r).toMatchObject({ res: "TX_REJECTED", orders: 0 });
+    expect(r.log).toContain("SIMULATION_ACCOUNTS");
+    expect(() => checkWalletAccount(null)).toThrow(/wallet/);
+  });
+
+  it("H-01 confirm: no wallet account now is never recorded as fine (retryable, alerted, order kept)", async () => {
+    const r = await confirmWith(landedWith(() => ({}), async () => null));
+    expect(r.res).toBe("VERIFY_UNAVAILABLE");
+    expect(r.state.copies.size).toBe(0);
+    expect(r.state.orders.get(r.b.orderId)?.status).toBe("pending");
+    expect(r.alerts.join("\n")).toContain("WALLET_MISSING");
+  });
 
   it("confirm: a landed Assign of the wallet fails the order, records nothing and alerts", async () => {
     const r = await confirmWith(landedWith((t, w) => ({ innerSystemOps: [...(t.innerSystemOps ?? []), { type: "assign", target: w }] })));

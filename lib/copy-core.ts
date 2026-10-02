@@ -1028,8 +1028,17 @@ async function verifyAndRecord(
   }
   try {
     checkInnerSystemOps(landed.innerSystemOps, owner.wallet);
+    if (walletNow === null) {
+      // H-01: no wallet account now (e.g. drained to 0 after landing): we can't tell it wasn't
+      // re-owned and closed, so never record it as fine. Retryable, with an alert.
+      (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
+        `${kind} confirm WALLET_MISSING for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…): not recorded yet`,
+      );
+      throw verifyUnavailable(order.id, signature);
+    }
     checkWalletAccount(walletNow);
   } catch (err) {
+    if (err instanceof AuthError) throw err;
     const code = err instanceof TxRejected ? err.code : "WALLET_OWNER";
     (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
       `${kind} confirm ${code} for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…): not recorded`,

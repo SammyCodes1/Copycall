@@ -515,7 +515,8 @@ export function checkInnerSystemOps(ops: readonly InnerSystemOp[] | null | undef
 
 /** F-01: the wallet must stay a plain System account: System-owned, not executable, no data. */
 export function checkWalletAccount(a: { owner: string; executable: boolean; dataLength: number } | null): void {
-  if (!a) return; // a drained wallet is caught by the SOL limit; nothing to re-own
+  // H-01: the fee payer must still exist. A missing entry is unknown, never "fine" (fail closed).
+  if (!a) throw new TxRejected("WALLET_MISSING", "Couldn't confirm your wallet account still exists");
   if (a.owner !== SYSTEM_PROGRAM_ID || a.executable || a.dataLength !== 0)
     throw new TxRejected("WALLET_OWNER", "Transaction changes your wallet account's owner or data");
 }
@@ -649,10 +650,12 @@ export async function simulateAndCheck(
 
   const walletAfter = sim.accounts[0];
   // F-01: the wallet stays System-owned, non-executable and data-less.
-  if (walletAfter && (typeof walletAfter.owner !== "string" || typeof walletAfter.executable !== "boolean"))
+  // H-01: the fee payer always exists after a successful simulation; a null entry fails closed.
+  if (!walletAfter) throw new TxRejected("SIMULATION_ACCOUNTS", "Simulation didn't return your wallet account");
+  if (typeof walletAfter.owner !== "string" || typeof walletAfter.executable !== "boolean")
     throw new TxRejected("SIMULATION_ACCOUNTS", "Simulation didn't return your wallet's owner");
-  checkWalletAccount(walletAfter ? { ...walletAfter, dataLength: walletAfter.data.length } : null);
-  const lamportsSpent = BigInt(lamportsBefore) - BigInt(walletAfter?.lamports ?? 0);
+  checkWalletAccount({ ...walletAfter, dataLength: walletAfter.data.length });
+  const lamportsSpent = BigInt(lamportsBefore) - BigInt(walletAfter.lamports);
   if (lamportsSpent > MAX_SOL_SPEND_LAMPORTS) throw new TxRejected("SOL_SPEND", "Transaction spends too much SOL");
 
   // USDC account: only the amount may change, and not by more than allowed.
