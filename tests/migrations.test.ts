@@ -348,15 +348,35 @@ describe("supabase migrations", () => {
       const mk = async (kind: string) =>
         (
           await db.query<{ id: string }>(
-            `insert into public.pending_orders (user_id, wallet, kind, leader_trade_id, market_id, side, amount_usdc, shares, message_hash, message_base64, expires_at)
-             values ($1, 'copyW', $2, $3, 'mC', 'YES', 5, 9.5, $4, 'AA==', now() + interval '90 seconds') returning id`,
-            [u, kind, kind === "copy" ? t : null, hash],
+            `insert into public.pending_orders (user_id, wallet, kind, leader_trade_id, market_id, side, amount_usdc, shares, message_hash, message_base64, expires_at, fee_model, max_usdc_out)
+             values ($1, 'copyW', $2, $3, 'mC', 'YES', 5, 9.5, $4, 'AA==', now() + interval '90 seconds', $5, $6) returning id`,
+            [u, kind, kind === "copy" ? t : null, hash, kind === "copy" ? "on_top" : null, kind === "copy" ? 5 : 0],
           )
         ).rows[0].id;
       const complete = (o: string, sig: string, user = u) =>
         db
           .query<{ r: string }>(`select public.complete_order($1, $2, $3) as r`, [o, user, sig])
           .then((r) => r.rows[0].r);
+
+      // A copy order must carry its fee model and limit; a claim may not allow USDC out.
+      const bad = (sql: string, args: unknown[]) => expect(db.query(sql, args)).rejects.toThrow(/pending_orders_/);
+      await bad(
+        `insert into public.pending_orders (user_id, wallet, kind, leader_trade_id, market_id, side, amount_usdc, shares, message_hash, message_base64, expires_at)
+         values ($1, 'copyW', 'copy', $2, 'mC', 'YES', 5, 9.5, $3, 'AA==', now() + interval '90 seconds')`,
+        [u, t, hash],
+      );
+      await bad(
+        `insert into public.pending_orders (user_id, wallet, kind, market_id, side, amount_usdc, shares, message_hash, message_base64, expires_at, max_usdc_out)
+         values ($1, 'copyW', 'claim', 'mC', 'YES', 5, 9.5, $2, 'AA==', now() + interval '90 seconds', 1)`,
+        [u, hash],
+      );
+      await expect(
+        db.query(
+          `insert into public.pending_orders (user_id, wallet, kind, leader_trade_id, market_id, side, amount_usdc, shares, message_hash, message_base64, expires_at, fee_model, max_usdc_out)
+           values ($1, 'copyW', 'copy', $2, 'mC', 'YES', 5, 9.5, $3, 'AA==', now() + interval '90 seconds', 'guess', 5)`,
+          [u, t, hash],
+        ),
+      ).rejects.toThrow(/fee_model/);
 
       const a = await mk("copy");
       const b = await mk("copy");

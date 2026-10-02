@@ -20,7 +20,9 @@ type Quote = {
   shares: string;
   avgPrice: string;
   feeUsdc: string;
-  maxUsdcOut: string; // the guard's limit: the max stake, fee included
+  feeModel: "inclusive" | "on_top" | "no_fee";
+  totalUsdc: string; // what leaves the wallet, fee included
+  maxUsdcOut: string; // the guard's limit: expected outflow, never above the max stake
   slippageBps: number;
   validUntil: number;
 };
@@ -36,7 +38,7 @@ type Phase =
 
 export type CopyFlowProps = {
   tradeId: string;
-  base: Omit<CopyReviewData, "stakeUsdc" | "avgPrice" | "shares" | "feeUsdc" | "slippageBps">;
+  base: Omit<CopyReviewData, "depositUsdc" | "feeModel" | "avgPrice" | "shares" | "feeUsdc" | "slippageBps">;
   nowSec: number;
   mock: boolean;
   sessionWallet: string;
@@ -84,7 +86,7 @@ function Checks({ built }: { built: Built }) {
         </Check>
         <Check ok>
           Simulated: <span className="num text-fg">{c.usdcOut} USDC</span> leaves your wallet, fee included (limit{" "}
-          <span className="num">{c.maxUsdcOut}</span>, your max stake)
+          <span className="num">{c.maxUsdcOut}</span>, never above your max stake)
         </Check>
         <Check ok>No approvals, no authority changes; your other token accounts are unchanged</Check>
       </ul>
@@ -155,7 +157,8 @@ export function CopyFlow({ tradeId, base, nowSec, mock, sessionWallet, closed }:
 
   const data: CopyReviewData = {
     ...base,
-    stakeUsdc: quote?.amountUsdc ?? null,
+    depositUsdc: quote?.amountUsdc ?? null,
+    feeModel: quote?.feeModel ?? null,
     avgPrice: quote?.avgPrice ?? null,
     shares: quote?.shares ?? null,
     feeUsdc: quote?.feeUsdc ?? null,

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { copyAmounts, type CopyAmounts } from "@/lib/copy-math";
+import { copyAmounts, type CopyAmounts, type FeeModel } from "@/lib/copy-math";
 import { CreatorFlag } from "./CreatorFlag";
 import { ago, shortAddr } from "./format";
 import { HitRate, SideTag, Tag } from "./ui/Badge";
@@ -15,7 +15,8 @@ export type CopyReviewData = {
   leaderShares: string;
   leaderTime: number | null;
   isCreatorTrade: boolean;
-  stakeUsdc: string | null; // the max stake = the hard total, fee included
+  depositUsdc: string | null; // amountUsdc sent to Panta (the stake, or stake - fee when the fee is on top)
+  feeModel: FeeModel | null; // detected by the server from the quote
   avgPrice: string | null;
   shares: string | null;
   feeUsdc: string | null;
@@ -60,11 +61,19 @@ const usdc = (v: string | null | undefined) => (v === null || v === undefined ? 
 
 /** The same breakdown the server checks (lib/copy-math.ts); null while loading or if the quote doesn't fit. */
 export function reviewAmounts(c: CopyReviewData): CopyAmounts | null {
-  if (c.stakeUsdc === null || c.feeUsdc === null || c.avgPrice === null || c.shares === null || c.slippageBps === null)
+  if (
+    c.depositUsdc === null ||
+    c.feeModel === null ||
+    c.feeUsdc === null ||
+    c.avgPrice === null ||
+    c.shares === null ||
+    c.slippageBps === null
+  )
     return null;
   try {
     return copyAmounts({
-      amountUsdc: c.stakeUsdc,
+      feeModel: c.feeModel,
+      depositUsdc: c.depositUsdc,
       feeUsdc: c.feeUsdc,
       avgPrice: c.avgPrice,
       shares: c.shares,
@@ -139,9 +148,9 @@ export function CopyReview({
           <Marker n="2" />
           <p className="label text-fg-subtle">Your copy · re-quoted now</p>
           <dl className="mt-1 divide-y divide-line">
-            <Row k="You pay in total" hint="your max stake, fee included" v={usdc(a?.total)} strong />
-            <Row k="Fee" hint="taken out of the total" v={usdc(a?.fee)} />
-            <Row k="Buys shares" hint="total minus fee" v={usdc(a?.toShares)} />
+            <Row k="You pay in total" hint="fee included, within your max stake" v={usdc(a?.total)} strong />
+            <Row k="Fee" hint="included in the total" v={usdc(a?.fee)} />
+            <Row k="Buys shares" hint="the total minus the fee" v={usdc(a?.toShares)} />
             <Row k="Your price" hint="average, from the quote" v={c.avgPrice} />
             <Row k="Est. shares" hint={a ? `${a.toShares} ÷ price` : undefined} v={a?.estShares ?? null} />
             <Row k="Slippage cap" hint="costs shares, never extra USDC" v={a?.slippagePct ?? null} />

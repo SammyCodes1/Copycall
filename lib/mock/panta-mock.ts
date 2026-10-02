@@ -131,8 +131,21 @@ type MockQuote = {
   shares: string;
   avgPrice: string;
   feeUsdc: string;
+  feeModel: MockFeeModel;
   expiresAtMs: number;
 };
+
+/**
+ * Which Panta fee model the mock plays (MOCK_PANTA_FEE_MODEL, read per quote):
+ *  - "inclusive" (default): the fee comes out of amountUsdc; the wallet pays amountUsdc.
+ *  - "on_top": shares are priced on the full amountUsdc; the wallet pays amountUsdc + fee.
+ * Real Panta's model isn't documented; Copycall detects it from each quote.
+ */
+export type MockFeeModel = "inclusive" | "on_top";
+export function mockFeeModel(): MockFeeModel {
+  const v = (process.env.MOCK_PANTA_FEE_MODEL ?? "").trim().toLowerCase();
+  return v === "on_top" ? "on_top" : "inclusive";
+}
 
 const g = globalThis as unknown as { __copycallMockQuotes?: Map<string, MockQuote> };
 const quotes = (g.__copycallMockQuotes ??= new Map());
@@ -143,10 +156,11 @@ export function quotePrimaryOrder(req: { wallet: string; marketId: string; side:
   const amount = Number(req.amountUsdc);
   if (amount < 1) throw new PantaError(400, "AMOUNT_TOO_SMALL", "Amount below minimum fill (mock)");
   const spot = Number((req.side === "yes" ? m.primaryYesPrice : m.primaryNoPrice) ?? "0.5");
-  const fee = amount * 0.02;
+  const feeModel = mockFeeModel();
+  const fee = Number((amount * 0.02).toFixed(2)); // 2%, in cents
   // Bonding curve: average fill is a little worse than spot, more so for bigger buys.
   const avg = Math.min(0.99, spot * (1 + Math.min(0.08, amount / 2000)));
-  const shares = (amount - fee) / avg;
+  const shares = (feeModel === "on_top" ? amount : amount - fee) / avg;
   const q: MockQuote = {
     quoteId: `qt_mock_${randomUUID()}`,
     wallet: req.wallet,
@@ -156,6 +170,7 @@ export function quotePrimaryOrder(req: { wallet: string; marketId: string; side:
     shares: shares.toFixed(2),
     avgPrice: avg.toFixed(6),
     feeUsdc: fee.toFixed(2),
+    feeModel,
     expiresAtMs: Date.now() + 90_000,
   };
   quotes.set(q.quoteId, q);
@@ -217,6 +232,17 @@ export function buildPrimaryOrder(req: { quoteId: string; wallet: string; maxSli
     u64(usdcToBase(q.shares)),
     Buffer.from([req.maxSlippageBps & 0xff, req.maxSlippageBps >> 8]),
   ]);
+  // MOCK_PANTA_FEE_MODEL=on_top: the fee is a separate SPL transfer on top of the deposit.
+  const onTopFee =
+    q.feeModel === "on_top"
+      ? [
+          ix(TOKEN_PROGRAM_ID, Buffer.concat([Buffer.from([3]), u64(usdcToBase(q.feeUsdc))]), [
+            [ata, false, true],
+            [mockVault(q.marketId), false, true],
+            [q.wallet, true, false],
+          ]),
+        ]
+      : [];
   return {
     orderId: `ord_mock_${randomUUID()}`,
     quoteId: q.quoteId,
@@ -240,6 +266,7 @@ export function buildPrimaryOrder(req: { quoteId: string; wallet: string; maxSli
         [SYSTEM_PROGRAM_ID, false, false],
         [mockPositionPda(q.marketId, q.wallet, q.side), false, true],
       ]),
+      ...onTopFee,
     ],
     derived: { event: q.marketId, vaultAuthority: mockVault(q.marketId) },
     recentBlockhash: mockBlockhash(),

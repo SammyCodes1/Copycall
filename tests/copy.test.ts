@@ -5,7 +5,7 @@
  */
 import nacl from "tweetnacl";
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Keypair, TransactionInstruction, TransactionMessage, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { GET as quoteRoute } from "@/app/api/copy/[tradeId]/quote/route";
 import { POST as buildRoute } from "@/app/api/copy/[tradeId]/build/route";
@@ -18,7 +18,7 @@ import { MOCK_PROGRAM_ID, getSharedMockChain } from "@/lib/mock/chain-mock";
 import { createCopyMemoryState, createMemoryCopyStore, type CopyMemoryState } from "@/lib/mock/copy-store-memory";
 import { copyAmounts, totalWithFeeShort } from "@/lib/copy-math";
 import * as panta from "@/lib/panta";
-import { baseToUsdc, usdcToBase } from "@/lib/solana-constants";
+import { USDC_MINT, associatedTokenAddress, baseToUsdc, usdcToBase } from "@/lib/solana-constants";
 import type { StoredTrade } from "@/lib/data-store";
 import { apiRequest, signedInUser } from "./helpers/session";
 
@@ -48,6 +48,8 @@ function deps(over: Partial<FlowDeps> & { state?: CopyMemoryState } = {}): FlowD
     },
     chain: getSharedMockChain(),
     pantaProgramIds: new Set([MOCK_PROGRAM_ID]),
+    feeModel: "inclusive",
+    feeCapBps: 500,
     mock: true,
     confirmTimeoutMs: 0,
     ...over,
@@ -233,7 +235,8 @@ describe("fee model: the max stake is the hard total, fee included", () => {
     const q = await quoteCopy(deps(), get("/q", u), trade.id);
     expect(q.amountUsdc).toBe("5.00");
     expect(q.maxUsdcOut).toBe("5.00");
-    const a = copyAmounts(q);
+    expect(q).toMatchObject({ feeModel: "inclusive", totalUsdc: "5.00" });
+    const a = copyAmounts({ ...q, depositUsdc: q.amountUsdc });
     expect(a.feeBase).toBeGreaterThan(0n);
     expect(a.feeBase + a.toSharesBase).toBe(usdcToBase(q.maxUsdcOut));
     // Mock Panta prices (stake - fee) / avgPrice and rounds; we round down, so at most 0.01 below.
@@ -295,7 +298,54 @@ describe("fee model: the max stake is the hard total, fee included", () => {
         quotePrimaryOrder: async (req) => ({ ...(await panta.quotePrimaryOrder(req)), feeUsdc: "5.00" }),
       },
     });
-    expect(await code(quoteCopy(d, get("/q", u), trade.id))).toBe("PANTA_ERROR");
+    expect(await code(quoteCopy(d, get("/q", u), trade.id))).toBe("FEE_TOO_HIGH");
+  });
+
+  it("D-01: refuses a quote fee above the cap (500 bps), and a stricter deployment cap", async () => {
+    const u = await signedInUser();
+    const fee = (feeUsdc: string) =>
+      deps({
+        panta: {
+          ...deps().panta,
+          quotePrimaryOrder: async (req) => {
+            const q = await panta.quotePrimaryOrder(req);
+            // keep the numbers consistent with "inclusive" so only the cap can refuse it
+            const shares = ((Number(q.amountUsdc) - Number(feeUsdc)) / Number(q.avgPrice)).toFixed(2);
+            return { ...q, feeUsdc, shares };
+          },
+        },
+      });
+    expect(await code(quoteCopy(fee("0.26"), get("/q", u), trade.id))).toBe("FEE_TOO_HIGH");
+    expect(await code(quoteCopy(fee("0.25"), get("/q", u), trade.id))).toBe("OK");
+    const strict = { ...deps(), feeCapBps: 100 };
+    expect(await code(quoteCopy(strict, get("/q", await signedInUser()), trade.id))).toBe("FEE_TOO_HIGH");
+  });
+
+  it("refuses ambiguous / unknown quotes and quotes that contradict the pinned model", async () => {
+    const u = await signedInUser();
+    const shaped = (shares: (q: { amountUsdc: string | number; avgPrice: string }) => string, feeUsdc?: string) =>
+      deps({
+        panta: {
+          ...deps().panta,
+          quotePrimaryOrder: async (req) => {
+            const q = await panta.quotePrimaryOrder(req);
+            return { ...q, ...(feeUsdc ? { feeUsdc } : {}), shares: shares(q) };
+          },
+        },
+      });
+    // Between the two models.
+    const between = shaped((q) => ((Number(q.amountUsdc) - 0.05) / Number(q.avgPrice)).toFixed(2));
+    expect(await code(quoteCopy(between, get("/q", u), trade.id))).toBe("FEE_MODEL_UNKNOWN");
+    // Fee too small to tell apart.
+    const tiny = shaped((q) => (Number(q.amountUsdc) / Number(q.avgPrice)).toFixed(2), "0.001");
+    expect(await code(quoteCopy(tiny, get("/q", await signedInUser()), trade.id))).toBe("FEE_MODEL_UNKNOWN");
+    // On-top numbers on an inclusive deployment: an error, not a switch.
+    const onTop = shaped((q) => (Number(q.amountUsdc) / Number(q.avgPrice)).toFixed(2));
+    expect(await code(quoteCopy(onTop, get("/q", await signedInUser()), trade.id))).toBe("FEE_MODEL_MISMATCH");
+    // Inclusive numbers on an on_top deployment: same.
+    expect(await code(quoteCopy({ ...deps(), feeModel: "on_top" }, get("/q", await signedInUser()), trade.id))).toBe(
+      "FEE_MODEL_MISMATCH",
+    );
   });
 
   it("positions list the copy as a total with its fee", async () => {
@@ -309,6 +359,81 @@ describe("fee model: the max stake is the hard total, fee included", () => {
     expect(totalWithFeeShort(view.copies[0].amountUsdc, view.copies[0].feeUsdc)).toBe(
       `5.00 USDC total (${q.feeUsdc} fee)`,
     );
+  });
+});
+
+describe("fee on top (MOCK_PANTA_FEE_MODEL=on_top, PANTA_FEE_MODEL=on_top), end to end", () => {
+  let prev: string | undefined;
+  beforeAll(() => {
+    prev = process.env.MOCK_PANTA_FEE_MODEL;
+    process.env.MOCK_PANTA_FEE_MODEL = "on_top";
+  });
+  afterAll(() => {
+    if (prev === undefined) delete process.env.MOCK_PANTA_FEE_MODEL;
+    else process.env.MOCK_PANTA_FEE_MODEL = prev;
+  });
+  const onTopDeps = (over: Partial<FlowDeps> & { state?: CopyMemoryState } = {}) => deps({ feeModel: "on_top", ...over });
+
+  it("re-quotes with 4.90, shows 5.00 total incl. 0.10 fee, builds, and moves exactly <= 5.00 on chain", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const seen: string[] = [];
+    const d = onTopDeps({
+      state,
+      panta: {
+        ...deps().panta,
+        quotePrimaryOrder: async (req) => {
+          seen.push(String(req.amountUsdc));
+          return panta.quotePrimaryOrder(req);
+        },
+      },
+    });
+    const chain = d.chain as ReturnType<typeof getSharedMockChain>;
+    const q = await quoteCopy(d, get("/q", u), trade.id);
+    expect(seen).toEqual(["5.00", "4.90"]);
+    expect(q).toMatchObject({ feeModel: "on_top", amountUsdc: "4.90", feeUsdc: "0.10", totalUsdc: "5.00", maxUsdcOut: "5.00" });
+    const a = copyAmounts({ ...q, depositUsdc: q.amountUsdc });
+    expect(a).toMatchObject({ total: "5.00", fee: "0.10", toShares: "4.90" });
+
+    const ata = associatedTokenAddress(u.wallet, USDC_MINT);
+    chain.seedWallet(u.wallet);
+    const before = chain.state.tokens.get(ata)!.amount;
+    const b = await buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id);
+    expect(b.checks).toMatchObject({ usdcOut: "5.00", maxUsdcOut: "5.00" });
+    expect(state.orders.get(b.orderId)).toMatchObject({ feeModel: "on_top", amountUsdc: "5.00", maxUsdcOut: "5.00" });
+    const r = await confirmOrder(
+      d,
+      post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u),
+      "copy",
+    );
+    expect(r.status).toBe("confirmed");
+    const moved = before - chain.state.tokens.get(ata)!.amount;
+    expect(moved).toBe(usdcToBase("5.00"));
+    expect(moved).toBeLessThanOrEqual(usdcToBase("5.00"));
+  });
+
+  it("an on-top build for the full 5.00 (not re-quoted) is refused before any wallet prompt", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = onTopDeps({ state });
+    const q = await quoteCopy(d, get("/q", u), trade.id);
+    // Tamper the stored quote record to the un-shrunk deposit, as a buggy server would.
+    const key = [...state.cache.keys()].find((k) => k.startsWith("qtok:"))!;
+    const rec = state.cache.get(key)!;
+    const tok = rec.value as { quote: { quoteId: string }; depositUsdc: string };
+    const full = await panta.quotePrimaryOrder({ wallet: u.wallet, marketId: trade.marketId, side: trade.side === "YES" ? "yes" : "no", amountUsdc: "5.00" });
+    tok.quote = full;
+    tok.depositUsdc = "5.000000";
+    expect(await code(buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id))).toBe("TX_REJECTED");
+    expect(state.orders.size).toBe(0);
+  });
+
+  it("a quote record from another pin can't be built after the deployment pin changes", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const q = await quoteCopy(onTopDeps({ state }), get("/q", u), trade.id);
+    const inclusive = deps({ state });
+    expect(await code(buildCopy(inclusive, post("/b", { quoteToken: q.quoteToken }, u), trade.id))).toBe("QUOTE_EXPIRED");
   });
 });
 

@@ -9,6 +9,8 @@ import { CopyReview, type CopyReviewData } from "@/components/CopyReview";
 import {
   copyAmounts,
   copyUsdcLimitBase,
+  DEFAULT_FEE_CAP_BPS,
+  feeCapBase,
   fromMicro,
   toMicro,
   totalWithFeeShort,
@@ -17,12 +19,19 @@ import {
 } from "@/lib/copy-math";
 
 // The numbers from shots/b3-copy-review-390.png.
-const SHOT = { amountUsdc: "5.00", feeUsdc: "0.10", avgPrice: "0.300750", shares: "16.29", slippageBps: 200 };
+const SHOT = {
+  feeModel: "inclusive" as const,
+  depositUsdc: "5.00",
+  feeUsdc: "0.10",
+  avgPrice: "0.300750",
+  shares: "16.29",
+  slippageBps: 200,
+};
 
 describe("copy amounts", () => {
   it("takes the fee out of the stake: 5.00 total = 0.10 fee + 4.90 for shares", () => {
     const a = copyAmounts(SHOT);
-    expect(a).toMatchObject({ total: "5.00", fee: "0.10", toShares: "4.90", limit: "5.00", slippagePct: "2.00%" });
+    expect(a).toMatchObject({ total: "5.00", fee: "0.10", toShares: "4.90", slippagePct: "2.00%" });
     expect(a.feeBase + a.toSharesBase).toBe(a.totalBase);
   });
 
@@ -42,31 +51,48 @@ describe("copy amounts", () => {
     for (const bps of [0, 100, 200, 500]) {
       const b = copyAmounts({ ...SHOT, slippageBps: bps });
       expect(b.totalBase).toBe(a.totalBase);
-      expect(b.limitBase).toBe(a.totalBase);
       expect(toMicro(b.minShares)).toBeLessThanOrEqual(toMicro(b.estShares));
     }
     expect(copyAmounts({ ...SHOT, slippageBps: 0 }).minShares).toBe("16.29");
   });
 
-  it("guard limit == max stake: total including the fee is never above what was approved", () => {
+  it("on top: a 4.90 deposit + 0.10 fee shows the same 5.00 total and 4.90 for shares", () => {
+    const a = copyAmounts({ ...SHOT, feeModel: "on_top", depositUsdc: "4.90", shares: "16.29" });
+    expect(a).toMatchObject({ total: "5.00", fee: "0.10", toShares: "4.90", estShares: "16.29" });
+  });
+
+  it("guard cap == max stake in every model; the total including the fee never exceeds it", () => {
     for (const [stake, fee] of [
       ["5.00", "0.10"],
       ["1.00", "0.02"],
       ["50.00", "1.00"],
       ["7.33", "0.146600"],
     ]) {
-      const a = copyAmounts({ ...SHOT, amountUsdc: stake, feeUsdc: fee });
-      expect(copyUsdcLimitBase(toMicro(stake))).toBe(toMicro(stake));
-      expect(a.limitBase).toBe(toMicro(stake));
-      expect(a.feeBase + a.toSharesBase).toBeLessThanOrEqual(a.limitBase);
+      const s = toMicro(stake);
+      const f = toMicro(fee);
+      expect(copyUsdcLimitBase(s)).toBe(s);
+      for (const a of [
+        copyAmounts({ ...SHOT, depositUsdc: stake, feeUsdc: fee }),
+        copyAmounts({ ...SHOT, feeModel: "on_top", depositUsdc: usdcExact(s - f), feeUsdc: fee }),
+      ]) {
+        expect(a.totalBase).toBeLessThanOrEqual(copyUsdcLimitBase(s));
+        expect(a.totalBase).toBe(s);
+      }
     }
+  });
+
+  it("D-01 fee cap: 500 bps of the stake by default", () => {
+    expect(DEFAULT_FEE_CAP_BPS).toBe(500);
+    expect(feeCapBase(toMicro("5.00"), 500)).toBe(toMicro("0.25"));
+    expect(feeCapBase(toMicro("5.00"), 300)).toBe(toMicro("0.15"));
   });
 
   it("refuses quotes that can't fit the model", () => {
     expect(() => copyAmounts({ ...SHOT, feeUsdc: "5.00" })).toThrow();
     expect(() => copyAmounts({ ...SHOT, feeUsdc: "6.00" })).toThrow();
     expect(() => copyAmounts({ ...SHOT, feeUsdc: "-0.10" })).toThrow();
-    expect(() => copyAmounts({ ...SHOT, amountUsdc: "0" })).toThrow();
+    expect(() => copyAmounts({ ...SHOT, depositUsdc: "0" })).toThrow();
+    expect(() => copyAmounts({ ...SHOT, feeModel: "no_fee" })).toThrow();
     expect(() => copyAmounts({ ...SHOT, avgPrice: "0" })).toThrow();
     expect(() => copyAmounts({ ...SHOT, avgPrice: "1.5" })).toThrow();
     expect(() => copyAmounts({ ...SHOT, slippageBps: 1.5 })).toThrow();
@@ -97,7 +123,8 @@ describe("wording", () => {
       leaderShares: "46.71",
       leaderTime: 1_000,
       isCreatorTrade: false,
-      stakeUsdc: SHOT.amountUsdc,
+      depositUsdc: SHOT.depositUsdc,
+      feeModel: SHOT.feeModel,
       avgPrice: SHOT.avgPrice,
       shares: SHOT.shares,
       feeUsdc: SHOT.feeUsdc,
@@ -107,9 +134,9 @@ describe("wording", () => {
     const text = html.replace(/<[^>]+>/g, "|");
     for (const s of [
       "You pay in total",
-      "your max stake, fee included",
+      "fee included, within your max stake",
       "5.00 USDC",
-      "taken out of the total",
+      "included in the total",
       "0.10 USDC",
       "4.90 USDC",
       "4.90 ÷ price",

@@ -50,7 +50,16 @@ import {
   baseToUsdc,
   usdcToBase,
 } from "./solana-constants";
-import { copyAmounts, copyUsdcLimitBase } from "./copy-math";
+import {
+  copyAmounts,
+  copyUsdcLimitBase,
+  feeCapBase,
+  fromMicro,
+  outflowBase,
+  usdcExact,
+  type FeeModel,
+} from "./copy-math";
+import { FeeModelError, quoteWithinStake, type PinnedFeeModel, type WithinStake } from "./fee-quote";
 import { safeTitle } from "./text";
 import type { TradeSide } from "./trades";
 import {
@@ -62,6 +71,7 @@ import {
   invokedPrograms,
   sha256Hex,
   simulateAndCheck,
+  type GuardContext,
   type TxKind,
 } from "./tx-guard";
 import { requireSession, type UserDeps } from "./user-core";
@@ -93,6 +103,10 @@ export type FlowDeps = UserDeps & {
   panta: FlowPanta;
   chain: Chain;
   pantaProgramIds: ReadonlySet<string>;
+  /** Pinned per deployment (PANTA_FEE_MODEL, lib/fee-config.ts). A quote that contradicts it is refused. */
+  feeModel: PinnedFeeModel;
+  /** Fee sanity cap as bps of the stake (PANTA_FEE_CAP_BPS, default 500). Quotes and builds above it are refused. */
+  feeCapBps: number;
   mock: boolean;
   nowMs?: () => number;
   confirmTimeoutMs?: number;
@@ -162,22 +176,32 @@ export type QuoteView = {
   marketId: string;
   title: string;
   side: TradeSide;
-  amountUsdc: string;
+  amountUsdc: string; // the deposit sent to Panta (stake, or stake - fee when the fee is on top)
   shares: string;
   avgPrice: string;
-  feeUsdc: string; // taken out of amountUsdc, not added on top
-  /** The most USDC the transaction may move, fee included (= the max stake). The guard enforces it. */
+  feeUsdc: string;
+  /** Detected from Panta's own quote numbers (lib/copy-math.ts classifyFeeModel). */
+  feeModel: FeeModel;
+  /** What leaves the wallet, fee included. Never above the max stake. */
+  totalUsdc: string;
+  /** The guard's cap for this order: the max stake, fee included, in every model. */
   maxUsdcOut: string;
   slippageBps: number;
   validUntil: number; // unix sec: build must happen before this
 };
 
+/** The quote record (api_cache, single use). Build trusts only this, never the client. */
 type QuoteToken = {
   uid: string;
   tradeId: string;
   stake: string;
   slippageBps: number;
-  quote: QuoteResponse;
+  quote: QuoteResponse; // the quote to build from (the re-quote when the fee is on top)
+  feeModel: FeeModel;
+  firstModel: string; // what the stake-sized quote classified as (audit trail)
+  depositUsdc: string; // exact, 6 dp
+  feeUsdc: string; // exact, 6 dp
+  maxUsdcOut: string; // exact, 6 dp
   validUntil: number;
 };
 
@@ -219,27 +243,46 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
   if (cached && cached.stake === settings.maxStakeUsdc && cached.slippageBps === settings.slippageBps)
     return cached.view;
 
-  let q: QuoteResponse;
+  // Quote with the stake, detect the fee model, and re-quote smaller if the fee is on top
+  // (lib/fee-quote.ts). Market and side from the stored trade, stake from saved settings.
+  const stakeBase = usdcToBase(settings.maxStakeUsdc);
+  let w: WithinStake<QuoteResponse>;
   try {
-    q = await d.panta.quotePrimaryOrder({
-      wallet: session.w,
-      marketId: trade.marketId, // from the stored trade
-      side: toApiSide(trade.side), // from the stored trade
-      amountUsdc: settings.maxStakeUsdc, // from the follower's saved settings
-    });
+    w = await quoteWithinStake(async (amountUsdc) => {
+      let r: QuoteResponse;
+      try {
+        r = await d.panta.quotePrimaryOrder({
+          wallet: session.w,
+          marketId: trade.marketId,
+          side: toApiSide(trade.side),
+          amountUsdc,
+        });
+      } catch (err) {
+        fromPanta(err);
+      }
+      if (r.marketId !== trade.marketId || fromApiSide(r.side) !== trade.side)
+        throw new FeeModelError("QUOTE_MISMATCH", "Panta returned a quote for a different order");
+      return r;
+    }, stakeBase, { pinned: d.feeModel, feeCapBps: d.feeCapBps });
   } catch (err) {
-    fromPanta(err);
+    if (!(err instanceof FeeModelError)) throw err;
+    d.log?.(`copy quote refused: ${err.code}${err.detected ? ` (${err.detected})` : ""}`);
+    if (err.code === "QUOTE_MISMATCH") throw new AuthError(502, "PANTA_ERROR", err.message);
+    throw new AuthError(502, err.code, err.message);
   }
-  if (
-    q.marketId !== trade.marketId ||
-    fromApiSide(q.side) !== trade.side ||
-    usdcToBase(q.amountUsdc) !== usdcToBase(settings.maxStakeUsdc)
-  ) {
-    throw new AuthError(502, "PANTA_ERROR", "Panta returned a quote for a different order");
-  }
-  // The fee comes out of the stake (lib/copy-math.ts). A quote that can't fit that model is refused.
+  const q = w.quote;
+  const limitBase = copyUsdcLimitBase(stakeBase); // the cap is the stake, in every model
+  if (w.outflowBase > limitBase) throw new AuthError(500, "ERROR", "Outflow above stake");
+  let amounts: ReturnType<typeof copyAmounts>;
   try {
-    copyAmounts({ ...q, amountUsdc: settings.maxStakeUsdc, slippageBps: settings.slippageBps });
+    amounts = copyAmounts({
+      feeModel: w.model,
+      depositUsdc: usdcExact(w.depositBase),
+      feeUsdc: q.feeUsdc,
+      avgPrice: q.avgPrice,
+      shares: q.shares,
+      slippageBps: settings.slippageBps,
+    });
   } catch {
     throw new AuthError(502, "PANTA_ERROR", "Panta returned a quote we can't show honestly. Try again.");
   }
@@ -257,11 +300,13 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
     marketId: trade.marketId,
     title: safeTitle(market?.title ?? "Untitled market"),
     side: trade.side,
-    amountUsdc: baseToUsdc(usdcToBase(q.amountUsdc)),
+    amountUsdc: usdcExact(w.depositBase),
     shares: q.shares,
     avgPrice: q.avgPrice,
     feeUsdc: q.feeUsdc,
-    maxUsdcOut: baseToUsdc(copyUsdcLimitBase(usdcToBase(settings.maxStakeUsdc))),
+    feeModel: w.model,
+    totalUsdc: amounts.total,
+    maxUsdcOut: usdcExact(limitBase),
     slippageBps: settings.slippageBps,
     validUntil,
   };
@@ -271,6 +316,11 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
     stake: settings.maxStakeUsdc,
     slippageBps: settings.slippageBps,
     quote: q,
+    feeModel: w.model,
+    firstModel: w.firstModel,
+    depositUsdc: fromMicro(w.depositBase, 6),
+    feeUsdc: fromMicro(w.feeBase, 6),
+    maxUsdcOut: fromMicro(limitBase, 6),
     validUntil,
   };
   await d.copy.cachePut(`qtok:${token}`, tok, validUntil);
@@ -320,6 +370,7 @@ async function assembleAndStore(
     recentBlockhash: string;
     lastValidBlockHeight: number | null;
     maxUsdcOutBase: bigint;
+    copyOutflow?: GuardContext["copyOutflow"];
     order: Omit<
       PendingOrder,
       | "id"
@@ -346,6 +397,7 @@ async function assembleAndStore(
       marketId: a.marketId,
       pantaProgramIds: d.pantaProgramIds,
       maxUsdcOutBase: a.maxUsdcOutBase,
+      copyOutflow: a.copyOutflow,
     });
     tx = assembleTransaction(a.instructions, a.recentBlockhash, a.wallet);
     sim = await simulateAndCheck(d.chain, tx, a.wallet, a.maxUsdcOutBase);
@@ -376,7 +428,7 @@ async function assembleAndStore(
       feePayer: a.wallet,
       programs: [...new Set(invokedPrograms(tx.message).map((p) => programLabel(d, p)))],
       usdcOut: baseToUsdc(sim.usdcDecrease),
-      maxUsdcOut: baseToUsdc(a.maxUsdcOutBase),
+      maxUsdcOut: usdcExact(a.maxUsdcOutBase),
       otherAccountsChecked: Math.max(0, sim.accountsChecked - 1),
     },
   };
@@ -414,18 +466,28 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
     fromPanta(err);
   }
   const stake = usdcToBase(settings.maxStakeUsdc);
+  // The fee model, deposit and limit come from the quote record, detected at quote time.
+  const model = tok.feeModel;
+  if (model !== "no_fee" && model !== d.feeModel) throw quoteExpired(); // the pin changed since the quote
+  const deposit = usdcToBase(tok.depositUsdc);
+  const fee = usdcToBase(tok.feeUsdc);
+  const maxOut = copyUsdcLimitBase(stake);
+  const outflow = outflowBase(model, deposit, fee);
+  if (maxOut !== usdcToBase(tok.maxUsdcOut) || outflow > maxOut) {
+    throw rejected("the quote doesn't fit your max stake");
+  }
+  if (fee > feeCapBase(stake, d.feeCapBps)) throw rejected("the fee is above the cap");
   if (
     b.wallet !== session.w ||
     b.marketId !== trade.marketId ||
     fromApiSide(b.side) !== trade.side ||
-    usdcToBase(b.amountUsdc) !== stake ||
+    usdcToBase(b.amountUsdc) !== deposit ||
     usdcToBase(b.feeUsdc) !== usdcToBase(tok.quote.feeUsdc) ||
     b.quoteId !== tok.quote.quoteId
   ) {
     throw rejected("Panta built a different order than the one quoted");
   }
-  // Hard total: the fee and any slippage come out of the stake, never on top of it.
-  const maxOut = copyUsdcLimitBase(stake);
+  // Hard total: fee and slippage stay inside the stake; the guard checks the actual outflow.
   const built = await assembleAndStore(d, {
     kind: "copy",
     uid: session.uid,
@@ -435,11 +497,14 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
     recentBlockhash: b.recentBlockhash,
     lastValidBlockHeight: b.lastValidBlockHeight ?? null,
     maxUsdcOutBase: maxOut,
+    copyOutflow: { model, depositBase: deposit, feeBase: fee },
     order: {
       leaderTradeId: trade.id,
       side: trade.side,
-      amountUsdc: baseToUsdc(stake),
+      amountUsdc: usdcExact(outflow), // total that leaves the wallet, fee included
       feeUsdc: tok.quote.feeUsdc,
+      feeModel: model,
+      maxUsdcOut: usdcExact(maxOut),
       shares: b.expectedShares,
       quoteId: tok.quote.quoteId,
       pantaOrderId: b.orderId,
@@ -484,6 +549,8 @@ export async function buildClaimTx(d: FlowDeps, request: Request): Promise<Built
       side: fromApiSide(c.outcome),
       amountUsdc: c.winningShares,
       feeUsdc: "0",
+      feeModel: null,
+      maxUsdcOut: "0",
       shares: c.winningShares,
       quoteId: null,
       pantaOrderId: null,
@@ -590,7 +657,6 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     await d.copy.failOrder(order.id);
     throw new AuthError(422, "TX_FAILED", "Transaction failed on-chain. Nothing was copied.");
   }
-
   const result = await d.copy.completeOrder(order.id, session.uid, signature);
   if (result === "signature_used") throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
   if (result === "not_pending") throw new AuthError(409, "ORDER_NOT_PENDING", "This order was already handled");

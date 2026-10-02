@@ -8,6 +8,7 @@ import type { FlowDeps } from "./copy-core";
 import { supabaseCopyStore } from "./copy-store-supabase";
 import { getUserDeps } from "./data";
 import { isMockMode, readEnv } from "./env";
+import { FeeConfigError, feeConfigFromEnv, type FeeConfig } from "./fee-config";
 import { MOCK_PROGRAM_ID, getSharedMockChain } from "./mock/chain-mock";
 import { getSharedMemoryCopyStore } from "./mock/copy-store-memory";
 import * as panta from "./panta";
@@ -28,6 +29,19 @@ export function pantaProgramIds(): ReadonlySet<string> {
   return new Set(ids);
 }
 
+/** Pinned fee model + fee cap. Real mode fails closed (503) without PANTA_FEE_MODEL. */
+export function feeConfig(): FeeConfig {
+  try {
+    return feeConfigFromEnv(readEnv(), isMockMode());
+  } catch (err) {
+    if (err instanceof FeeConfigError) {
+      console.error(`[copy] ${err.message}`); // names the variable, never its value
+      throw new AuthError(503, "NOT_CONFIGURED", "Copying isn't configured on this server yet");
+    }
+    throw err;
+  }
+}
+
 export function getFlowDeps(): FlowDeps {
   const mock = isMockMode();
   return {
@@ -42,6 +56,10 @@ export function getFlowDeps(): FlowDeps {
     },
     chain: mock ? getSharedMockChain() : rpcChain,
     pantaProgramIds: pantaProgramIds(),
+    ...(() => {
+      const f = feeConfig();
+      return { feeModel: f.model, feeCapBps: f.feeCapBps };
+    })(),
     mock,
     log: (m) => console.info(`[copy] ${m}`),
   };

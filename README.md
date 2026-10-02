@@ -134,11 +134,24 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    approvals / authority changes / closes, compute-budget and priority-fee caps, USDC out ≤ max stake), assembles
    the v0 transaction, and simulates it (USDC decrease ≤ max stake, other token accounts unchanged, SOL spend ≤ 0.02).
    The fee must match the quote. The exact bytes are stored as a pending order (90 s).
-   **Fee model:** the max stake is the hard total, fee included. We quote Panta with `amountUsdc` = max stake;
-   the quoted `feeUsdc` comes out of it, so (stake − fee) buys shares and the estimate is
-   (stake − fee) / `avgPrice` (never above Panta's `shares`). Slippage costs shares, never extra USDC: the review
-   shows the minimum shares at the cap. The guard's limit is the max stake itself, with no fee or slippage
-   headroom (5.00 approved = 5.00 limit). Shared math: `lib/copy-math.ts`.
+   **Fee model:** the max stake is the hard total, fee included, and the guard's cap is the stake itself in every
+   model (5.00 approved = 5.00 cap, no fee or slippage headroom). Panta's docs don't say whether the quoted fee is
+   inside the deposit or on top, so the model is **pinned per deployment** with `PANTA_FEE_MODEL=inclusive|on_top`
+   (required in real mode; mock defaults to `MOCK_PANTA_FEE_MODEL`, default `inclusive`). Each quote is classified
+   from its own numbers (`lib/copy-math.ts` `classifyFeeModel`): *inclusive* if shares ≈ (amount − fee) / avgPrice,
+   *on top* if shares ≈ amount / avgPrice, within 0.01 share + 5 bps. If both or neither fit, or the two predictions
+   are closer than twice the tolerance, or the quote contradicts the pin, the copy is refused. With the fee on top
+   the server re-quotes once with deposit = stake − fee (rounded down to the cent) and requires deposit + re-quoted
+   fee ≤ stake (`lib/fee-quote.ts`). Fees above `PANTA_FEE_CAP_BPS` of the stake (default 500 = 5%) are refused.
+   The model and deposit live on the quote record in `api_cache`; build uses only those. The static check counts
+   the decoded deposit plus every top-level transfer (and the fee, for on top); the simulation measures the real
+   USDC decrease. Slippage costs shares, never extra USDC.
+
+   **Find the model for a deployment** with one quote-only call (never builds or signs; the key is read from
+   `PANTA_API_KEY` and never printed):
+   `node --env-file=.env.local scripts/panta-fee-model.mjs --market <marketId> --side yes [--amount 5.00]`.
+   It prints the quote, both predictions and `detected: inclusive|on_top|ambiguous|unknown`, and exits 2 when
+   nothing should be pinned. In mock: `MOCK_PANTA=true [MOCK_PANTA_FEE_MODEL=on_top] node scripts/panta-fee-model.mjs`.
 3. The wallet signs those exact bytes. `POST /api/copy/confirm` `{orderId, signedTransaction}`: the message
    hash must match, the signature must verify for the session wallet and be unused. The server broadcasts,
    waits for confirmation, re-checks the landed transaction, records the copy atomically

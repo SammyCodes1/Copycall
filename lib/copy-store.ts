@@ -19,6 +19,8 @@ export type PendingOrder = {
   side: TradeSide;
   amountUsdc: string; // copy: stake; claim: winning shares (1 USDC each)
   feeUsdc: string;
+  feeModel: "inclusive" | "on_top" | "no_fee" | null; // copies: detected at quote time; claims: null
+  maxUsdcOut: string | null; // the guard limit the order was built under (claims: "0")
   shares: string;
   quoteId: string | null;
   pantaOrderId: string | null;

@@ -96,7 +96,8 @@ export type SampleCopy = {
   leaderShares: string;
   leaderTime: number | null;
   isCreatorTrade: boolean;
-  stakeUsdc: string;
+  depositUsdc: string;
+  feeModel: "inclusive";
   avgPrice: string;
   shares: string;
   feeUsdc: string;
@@ -128,7 +129,8 @@ export function getSampleCopy(): SampleCopy | null {
       leaderShares: Number(side === "yes" ? t.yesAmount : t.noAmount).toFixed(2),
       leaderTime: t.blockTime,
       isCreatorTrade: creators[t.marketId] === t.wallet,
-      stakeUsdc: stake.toFixed(2),
+      depositUsdc: stake.toFixed(2),
+      feeModel: "inclusive",
       avgPrice: avg.toFixed(4),
       shares: ((stake - fee) / avg).toFixed(2),
       feeUsdc: fee.toFixed(2),

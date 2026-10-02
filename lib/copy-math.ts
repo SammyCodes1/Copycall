@@ -3,15 +3,21 @@
  * the server quote/build checks and the transaction guard. Pure, no imports,
  * safe for the client bundle.
  *
- * Fee model (security decision, Sep 2026): the max stake the user approves is
- * the HARD TOTAL the transaction may move out of their wallet, fee included.
- *  - We quote Panta with amountUsdc = max stake. Panta's quote `feeUsdc` is
- *    taken out of that amount, so what buys shares is stake - fee.
- *  - Slippage never adds USDC: the USDC in is fixed, so a moved curve means
- *    fewer shares (or Panta refuses the build with QUOTE_STALE). We show the
- *    minimum shares at the slippage cap instead of any extra USDC.
- *  - The guard's USDC limit (static checks and simulation) is exactly the max
- *    stake. There is no headroom for the fee or for slippage above it.
+ * Hard rule (security decision, Sep 2026): the max stake the user approves is
+ * the TOTAL the transaction may move out of their wallet, fee included.
+ *
+ * Panta's docs don't say whether the quoted fee is inside the deposit or added
+ * on top, so we detect it from each quote's own numbers (classifyFeeModel):
+ *  - "inclusive": shares ~ (amount - fee) / avgPrice; the wallet pays amount.
+ *  - "on_top":    shares ~ amount / avgPrice;         the wallet pays amount + fee.
+ *  - "no_fee":    fee is 0; both models agree; the wallet pays amount.
+ * Anything else (both match, neither matches) is refused.
+ *
+ * The expected model is PINNED per deployment (PANTA_FEE_MODEL); a quote that
+ * contradicts the pin is refused, never treated as the other model. With the
+ * fee on top, the server re-quotes once with deposit = stake - fee and requires
+ * deposit + re-quoted fee <= stake (lib/fee-quote.ts). Slippage never adds
+ * USDC. The guard's cap is the stake itself in every model.
  */
 
 const SCALE = 1_000_000n; // 6 decimals for USDC, prices and shares
@@ -39,13 +45,80 @@ export function usdcExact(v: bigint): string {
   return full.replace(/(\.\d{2}\d*?)0+$/, "$1");
 }
 
-/** The most USDC (base units) a copy transaction may move out of the wallet: the approved max stake, fee included. */
+export type FeeModel = "inclusive" | "on_top" | "no_fee";
+export type FeeModelResult = FeeModel | "ambiguous" | "unknown";
+
+/**
+ * Tolerance for matching a quote's shares against a model's prediction:
+ * 0.01 share (Panta rounds shares to 2 dp) plus 5 bps of the prediction
+ * (avgPrice is rounded to 6 dp). A 2% fee separates the models by ~200 bps.
+ */
+export const FEE_MODEL_TOLERANCE_BPS = 5n;
+export const FEE_MODEL_TOLERANCE_ABS = 10_000n; // 0.01 share in micro-units
+
+function tolerance(predicted: bigint): bigint {
+  return FEE_MODEL_TOLERANCE_ABS + (predicted * FEE_MODEL_TOLERANCE_BPS) / 10_000n;
+}
+function withinTolerance(actual: bigint, predicted: bigint): boolean {
+  const diff = actual > predicted ? actual - predicted : predicted - actual;
+  return diff <= tolerance(predicted);
+}
+
+/** Which fee model a quote's own numbers fit. Pure; never throws on odd numbers (returns "unknown"). */
+export function classifyFeeModel(q: { amountUsdc: string; feeUsdc: string; avgPrice: string; shares: string }): {
+  model: FeeModelResult;
+  inclusiveShares: string | null;
+  onTopShares: string | null;
+} {
+  let amount: bigint, fee: bigint, price: bigint, shares: bigint;
+  try {
+    [amount, fee, price, shares] = [toMicro(q.amountUsdc), toMicro(q.feeUsdc), toMicro(q.avgPrice), toMicro(q.shares)];
+  } catch {
+    return { model: "unknown", inclusiveShares: null, onTopShares: null };
+  }
+  if (amount <= 0n || price <= 0n || price > SCALE || shares <= 0n || fee >= amount)
+    return { model: "unknown", inclusiveShares: null, onTopShares: null };
+  const inc = ((amount - fee) * SCALE) / price;
+  const top = (amount * SCALE) / price;
+  const out = { inclusiveShares: fromMicro(inc, 6), onTopShares: fromMicro(top, 6) };
+  const a = withinTolerance(shares, inc);
+  const b = withinTolerance(shares, top);
+  if (fee === 0n) return { model: a ? "no_fee" : "unknown", ...out };
+  // The two predictions must be at least twice the combined tolerance apart, or
+  // rounding could make a quote look like either: refuse those as ambiguous.
+  if (a && b) return { model: "ambiguous", ...out };
+  if (top - inc <= 2n * (tolerance(inc) + tolerance(top))) return { model: "ambiguous", ...out };
+  if (a) return { model: "inclusive", ...out };
+  if (b) return { model: "on_top", ...out };
+  return { model: "unknown", ...out };
+}
+
+/** USDC (base units) the wallet pays for a deposit under a fee model. */
+export function outflowBase(model: FeeModel, depositBase: bigint, feeBase: bigint): bigint {
+  return model === "on_top" ? depositBase + feeBase : depositBase;
+}
+
+/**
+ * The most USDC (base units) a copy transaction may move out of the wallet: the
+ * approved max stake, fee included, in every fee model. The model only changes
+ * what deposit we ask Panta for; it never raises (or lowers) this cap.
+ */
 export function copyUsdcLimitBase(maxStakeBase: bigint): bigint {
   return maxStakeBase;
 }
 
+/** Default fee sanity cap (D-01): a quote or build fee above 5% of the stake is refused. */
+export const DEFAULT_FEE_CAP_BPS = 500;
+export const MAX_FEE_CAP_BPS = 1_000;
+
+/** Fee cap in base units for a stake: floor(stake x bps / 10_000). */
+export function feeCapBase(stakeBase: bigint, capBps: number): bigint {
+  return (stakeBase * BigInt(capBps)) / 10_000n;
+}
+
 export type CopyQuoteNumbers = {
-  amountUsdc: string; // what we quoted: the max stake = the total
+  feeModel: FeeModel;
+  depositUsdc: string; // amountUsdc sent to Panta (the stake, or stake - fee when the fee is on top)
   feeUsdc: string;
   avgPrice: string;
   shares: string; // Panta's estimate
@@ -53,14 +126,12 @@ export type CopyQuoteNumbers = {
 };
 
 export type CopyAmounts = {
-  totalBase: bigint;
+  totalBase: bigint; // what leaves the wallet, fee included
   feeBase: bigint;
   toSharesBase: bigint;
-  limitBase: bigint;
   total: string; // "5.00"
   fee: string; // "0.10"
   toShares: string; // "4.90"
-  limit: string; // "5.00"
   estShares: string; // "16.29"
   minShares: string; // "15.96" at the slippage cap
   slippagePct: string; // "2.00%"
@@ -68,38 +139,37 @@ export type CopyAmounts = {
 
 /**
  * Break a quote down the way the guard sees it. Throws when the quote can't
- * fit the model (fee missing, negative or not smaller than the total).
+ * fit the model (fee missing, negative or not smaller than the deposit).
  *
- * The share estimate is (total - fee) / avgPrice, rounded down, and never more
- * than Panta's own `shares`, so the screen can't promise more than either.
+ * The share estimate is (USDC that buys shares) / avgPrice, rounded down, and
+ * never more than Panta's own `shares`, so the screen can't promise more than either.
  */
 export function copyAmounts(q: CopyQuoteNumbers): CopyAmounts {
-  const totalBase = toMicro(q.amountUsdc);
+  const depositBase = toMicro(q.depositUsdc);
   const feeBase = toMicro(q.feeUsdc);
-  if (totalBase <= 0n) throw new Error("Stake must be positive");
-  if (feeBase >= totalBase) throw new Error("Fee is not smaller than the stake");
+  if (depositBase <= 0n) throw new Error("Deposit must be positive");
+  if (feeBase >= depositBase) throw new Error("Fee is not smaller than the deposit");
+  if (q.feeModel === "no_fee" && feeBase !== 0n) throw new Error("no_fee with a fee");
   const price = toMicro(q.avgPrice);
   if (price <= 0n || price > SCALE) throw new Error("Price must be in (0, 1]");
   if (!Number.isInteger(q.slippageBps) || q.slippageBps < 0 || q.slippageBps > 10_000)
     throw new Error("Invalid slippage");
 
-  const toSharesBase = totalBase - feeBase;
+  const totalBase = outflowBase(q.feeModel, depositBase, feeBase);
+  const toSharesBase = q.feeModel === "on_top" ? depositBase : depositBase - feeBase;
   const implied = (toSharesBase * SCALE) / price; // micro-shares, rounded down
   const panta = toMicro(q.shares);
   const est = implied < panta ? implied : panta;
   const cent = 10_000n; // 0.01 share
   const estCents = (est / cent) * cent;
   const minShares = (estCents * BigInt(10_000 - q.slippageBps)) / 10_000n;
-  const limitBase = copyUsdcLimitBase(totalBase);
   return {
     totalBase,
     feeBase,
     toSharesBase,
-    limitBase,
     total: usdcExact(totalBase),
     fee: usdcExact(feeBase),
     toShares: usdcExact(toSharesBase),
-    limit: usdcExact(limitBase),
     estShares: fromMicro(estCents),
     minShares: fromMicro(minShares),
     slippagePct: `${(q.slippageBps / 100).toFixed(2)}%`,

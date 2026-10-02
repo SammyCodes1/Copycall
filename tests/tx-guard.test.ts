@@ -51,6 +51,7 @@ beforeAll(async () => {
     marketId: primaryMarket,
     pantaProgramIds: PROGRAMS,
     maxUsdcOutBase: copyUsdcLimitBase(usdcToBase("5.00")), // hard total: the fee is inside the 5.00
+    copyOutflow: { model: "inclusive", depositBase: usdcToBase("5.00"), feeBase: usdcToBase(q.feeUsdc) },
   };
   feeBase = usdcToBase(q.feeUsdc);
 });
@@ -130,7 +131,9 @@ describe("static instruction checks", () => {
   it("reject transfers into Panta's accounts above the max stake", () => {
     const ata = associatedTokenAddress(wallet);
     const ok = tokenIx(TOKEN_PROGRAM_ID, [3, ...u64(1_000_000n)], [ata, mockVault(primaryMarket), wallet]);
-    expect(reject([...build.instructions, ok])).toBe("ACCEPTED");
+    // Counted on top of the 5.00 deposit: fits a 6.00 cap, not the 5.00 one.
+    expect(reject([...build.instructions, ok], { maxUsdcOutBase: usdcToBase("6.00") })).toBe("ACCEPTED");
+    expect(reject([...build.instructions, ok])).toBe("OVER_STAKE");
     const big = tokenIx(
       TOKEN_PROGRAM_ID,
       [3, ...u64(ctx.maxUsdcOutBase + 1n)],
@@ -203,6 +206,46 @@ describe("simulation checks", () => {
     await expect(simulateAndCheck(chain, tx2, wallet, ctx.maxUsdcOutBase)).rejects.toMatchObject({ code: "OVER_STAKE" });
   });
 
+  it("on top: a build of 5.00 + fee is caught by the static check AND the simulation", async () => {
+    const prev = process.env.MOCK_PANTA_FEE_MODEL;
+    process.env.MOCK_PANTA_FEE_MODEL = "on_top";
+    try {
+      // Not re-quoted: deposit = stake, fee on top (a separate SPL transfer in the mock).
+      const q = await panta.quotePrimaryOrder({ wallet, marketId: primaryMarket, side: "yes", amountUsdc: "5.00" });
+      const b = await panta.buildPrimaryOrder({ quoteId: q.quoteId, wallet, maxSlippageBps: 200 });
+      const f = usdcToBase(q.feeUsdc);
+      const onTop = { ...ctx, copyOutflow: { model: "on_top" as const, depositBase: usdcToBase("5.00"), feeBase: f } };
+      expect(reject(b.instructions, onTop)).toBe("OVER_STAKE");
+      // Even if the fee were charged inside the program (no top-level transfer), the model counts it.
+      const withoutFeeIx = b.instructions.filter((i) => i.programId !== TOKEN_PROGRAM_ID);
+      expect(reject(withoutFeeIx, onTop)).toBe("OVER_STAKE");
+      const tx = assembleTransaction(b.instructions, b.recentBlockhash, wallet);
+      await expect(simulateAndCheck(chain, tx, wallet, ctx.maxUsdcOutBase)).rejects.toMatchObject({ code: "OVER_STAKE" });
+
+      // Re-quoted at 4.90: 4.90 + 0.10 = 5.00 passes both, and the simulation moves exactly 5.00.
+      const q2 = await panta.quotePrimaryOrder({ wallet, marketId: primaryMarket, side: "yes", amountUsdc: "4.90" });
+      const b2 = await panta.buildPrimaryOrder({ quoteId: q2.quoteId, wallet, maxSlippageBps: 200 });
+      const f2 = usdcToBase(q2.feeUsdc);
+      expect(usdcToBase("4.90") + f2).toBeLessThanOrEqual(usdcToBase("5.00"));
+      const ok = { ...ctx, copyOutflow: { model: "on_top" as const, depositBase: usdcToBase("4.90"), feeBase: f2 } };
+      expect(reject(b2.instructions, ok)).toBe("ACCEPTED");
+      const tx2 = assembleTransaction(b2.instructions, b2.recentBlockhash, wallet);
+      const r = await simulateAndCheck(chain, tx2, wallet, ctx.maxUsdcOutBase);
+      expect(r.usdcDecrease).toBe(usdcToBase("4.90") + f2);
+      expect(r.usdcDecrease).toBeLessThanOrEqual(usdcToBase("5.00"));
+    } finally {
+      if (prev === undefined) delete process.env.MOCK_PANTA_FEE_MODEL;
+      else process.env.MOCK_PANTA_FEE_MODEL = prev;
+    }
+  });
+
+  it("a copy without a fee model, or with a deposit that doesn't match the quote, is refused", () => {
+    expect(reject(build.instructions, { copyOutflow: undefined })).toBe("NO_FEE_MODEL");
+    expect(
+      reject(build.instructions, { copyOutflow: { model: "inclusive", depositBase: usdcToBase("4.99"), feeBase } }),
+    ).toBe("DEPOSIT_MISMATCH");
+  });
+
   it("reject a top-level transfer of stake + fee", () => {
     const ata = associatedTokenAddress(wallet);
     const ix = (n: bigint) => tokenIx(TOKEN_PROGRAM_ID, [3, ...u64(n)], [ata, mockVault(primaryMarket), wallet]);
@@ -214,7 +257,7 @@ describe("simulation checks", () => {
     const data = Buffer.from(ixs[3].data, "base64");
     data.writeBigUInt64LE(ctx.maxUsdcOutBase + 1n, 8); // the program would pull more than quoted
     ixs[3].data = data.toString("base64");
-    expect(reject(ixs)).toBe("ACCEPTED");
+    expect(reject(ixs)).toBe("DEPOSIT_MISMATCH"); // the decoded deposit no longer matches the quote
     const tx = assembleTransaction(ixs, build.recentBlockhash, wallet);
     await expect(simulateAndCheck(chain, tx, wallet, ctx.maxUsdcOutBase)).rejects.toMatchObject({ code: "OVER_STAKE" });
   });
@@ -223,7 +266,7 @@ describe("simulation checks", () => {
     const other = associatedTokenAddress(wallet, MOCK_OTHER_MINT);
     const ix = tokenIx(TOKEN_PROGRAM_ID, [3, ...u64(1n)], [other, mockVault(primaryMarket), wallet]);
     const ixs = [...build.instructions, ix];
-    expect(reject(ixs)).toBe("ACCEPTED");
+    expect(reject(ixs, { maxUsdcOutBase: usdcToBase("6.00") })).toBe("ACCEPTED");
     const tx = assembleTransaction(ixs, build.recentBlockhash, wallet);
     await expect(simulateAndCheck(chain, tx, wallet, ctx.maxUsdcOutBase)).rejects.toMatchObject({
       code: "OTHER_ACCOUNT_CHANGED",

@@ -25,6 +25,8 @@ type OrderRow = {
   side: TradeSide;
   amount_usdc: string | number;
   fee_usdc: string | number;
+  fee_model: PendingOrder["feeModel"];
+  max_usdc_out: string | number | null;
   shares: string | number;
   quote_id: string | null;
   panta_order_id: string | null;
@@ -48,6 +50,8 @@ function toOrder(r: OrderRow): PendingOrder {
     side: r.side,
     amountUsdc: dec(r.amount_usdc, 2),
     feeUsdc: dec(r.fee_usdc, 2),
+    feeModel: r.fee_model ?? null,
+    maxUsdcOut: r.max_usdc_out === null || r.max_usdc_out === undefined ? null : dec(r.max_usdc_out, 6),
     shares: dec(r.shares, 2),
     quoteId: r.quote_id,
     pantaOrderId: r.panta_order_id,
@@ -93,6 +97,8 @@ export const supabaseCopyStore: CopyStore = {
         side: o.side,
         amount_usdc: o.amountUsdc,
         fee_usdc: o.feeUsdc,
+        fee_model: o.feeModel,
+        max_usdc_out: o.maxUsdcOut,
         shares: o.shares,
         quote_id: o.quoteId,
         panta_order_id: o.pantaOrderId,

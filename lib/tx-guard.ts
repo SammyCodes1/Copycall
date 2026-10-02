@@ -17,6 +17,7 @@ import {
   VersionedMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
+import { outflowBase, type FeeModel } from "./copy-math";
 import type { PantaInstruction } from "./schemas";
 import {
   ATA_PROGRAM_ID,
@@ -75,9 +76,16 @@ export type GuardContext = {
   pantaProgramIds: ReadonlySet<string>;
   /**
    * Most USDC (base units) the user may send via top-level token transfers.
-   * Copies: the approved max stake, fee included (lib/copy-math.ts). 0 for claims.
+   * Copies: the approved max stake, fee included, in every fee model
+   * (lib/copy-math.ts copyUsdcLimitBase). 0 for claims.
    */
   maxUsdcOutBase: bigint;
+  /**
+   * Copies only (required): the quoted deposit and fee and the fee model they were
+   * detected under. The static check counts the Panta instruction's own deposit
+   * (+ the fee when it's on top) toward the limit, not just top-level transfers.
+   */
+  copyOutflow?: { model: FeeModel; depositBase: bigint; feeBase: bigint };
 };
 
 const u64 = (b: Buffer, at: number) => b.readBigUInt64LE(at);
@@ -128,6 +136,21 @@ export function checkInstructions(ixs: PantaInstruction[], ctx: GuardContext): v
   let cuLimit: bigint | null = null;
   let cuPrice: bigint | null = null;
   let tokenOut = 0n;
+  let expectedOut = 0n; // what the fee model says the order costs, from the decoded deposit
+  if (ctx.kind === "copy") {
+    // ASSUMPTION (flagged, like the discriminator above): primary_order_usdc's first
+    // Anchor argument is the USDC deposit as a u64 in base units. If it isn't, the
+    // deposit won't match the quote and every build fails closed here.
+    if (!ctx.copyOutflow) throw new TxRejected("NO_FEE_MODEL", "No fee model for this copy");
+    const main = ixs.find((ix) => ctx.pantaProgramIds.has(ix.programId))!;
+    const data = Buffer.from(main.data, "base64");
+    if (data.length < 16) throw new TxRejected("DEPOSIT_MISMATCH", "Order amount is missing");
+    const declared = u64(data, 8);
+    if (declared !== ctx.copyOutflow.depositBase)
+      throw new TxRejected("DEPOSIT_MISMATCH", "Order amount doesn't match the quote");
+    tokenOut += declared; // the Panta instruction's own USDC deposit
+    expectedOut = outflowBase(ctx.copyOutflow.model, declared, ctx.copyOutflow.feeBase);
+  }
   for (const ix of ixs) {
     const data = Buffer.from(ix.data, "base64");
     const acct = (i: number) => ix.accounts[i]?.pubkey;
@@ -177,6 +200,9 @@ export function checkInstructions(ixs: PantaInstruction[], ctx: GuardContext): v
     const fee = (cuPrice * (cuLimit ?? 1_400_000n)) / 1_000_000n; // micro-lamports per CU
     if (fee > MAX_PRIORITY_FEE_LAMPORTS) throw new TxRejected("PRIORITY_FEE", "Priority fee is too high");
   }
+  // Actual outflow seen statically: the decoded deposit + every top-level transfer the user signs.
+  // An on-top fee charged inside the program (not as a top-level transfer) is counted from the quote.
+  if (expectedOut > tokenOut) tokenOut = expectedOut;
   if (tokenOut > ctx.maxUsdcOutBase) throw new TxRejected("OVER_STAKE", "Transfers more than your max stake");
 }
 
@@ -288,8 +314,8 @@ export type SimulationCheck = {
 /**
  * Simulate the exact transaction and require (addendum A):
  *  - success
- *  - the user's USDC decrease <= maxUsdcDecreaseBase (copies: the max stake, which is the
- *    hard total with the Panta fee and any slippage inside it; claims: 0)
+ *  - the user's USDC decrease <= maxUsdcDecreaseBase (copies: the max stake, fee and
+ *    slippage inside it, in every fee model; claims: 0)
  *  - the USDC account keeps its owner, delegate and close authority (only the amount may change)
  *  - no other user-owned token account changes at all
  *  - SOL spent stays under MAX_SOL_SPEND_LAMPORTS
