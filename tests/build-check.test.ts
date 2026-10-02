@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import { ensureMockData } from "@/lib/data";
-import { runBuildCheck, parseCheckAmount, type BuildCheckOptions } from "@/lib/build-check";
+import { runBuildCheck, runClaimCheck, parseCheckAmount, type BuildCheckOptions } from "@/lib/build-check";
 import { MOCK_PROGRAM_ID, getSharedMockChain } from "@/lib/mock/chain-mock";
 import * as panta from "@/lib/panta";
 import marketsJson from "@/fixtures/markets.json";
@@ -127,6 +127,75 @@ describe("runBuildCheck", () => {
   });
 });
 
+describe("runClaimCheck (G-05: simulate a claim only, print its layout)", () => {
+  type ClaimIx = Awaited<ReturnType<typeof panta.buildClaim>>["instructions"][number];
+  const claimable = async (wallet: string) =>
+    (await panta.getPositions(wallet)).positions.find((p) => p.claimable && !p.claimed)!.marketId;
+  const claimOpts = async () => {
+    const wallet = Keypair.generate().publicKey.toBase58();
+    return { wallet, marketId: await claimable(wallet), pantaProgramIds: new Set([MOCK_PROGRAM_ID]) };
+  };
+  const tamperedClaim = (mutate: (main: ClaimIx) => void) => ({
+    buildClaim: async (req: Parameters<typeof panta.buildClaim>[0]) => {
+      const c = await panta.buildClaim(req);
+      const ixs = structuredClone(c.instructions);
+      mutate(ixs.find((i) => i.programId === MOCK_PROGRAM_ID)!);
+      return { ...c, instructions: ixs };
+    },
+    chain: readOnlyChain(),
+  });
+
+  it("an honest mock claim passes and reports instructions, data, roles, CPIs, payout and post-sim accounts", async () => {
+    const o = await claimOpts();
+    const sims: number[] = [];
+    const c = readOnlyChain();
+    const r = await runClaimCheck(o, {
+      buildClaim: panta.buildClaim,
+      chain: { ...c, simulate: async (tx, a) => (sims.push(a.length), c.simulate(tx, a)) },
+    });
+    expect(r.failed).toBeNull();
+    expect(r.ok).toBe(true);
+    expect(r.positionVerification).toBe("unavailable");
+    expect(r.claim?.winningShares).toMatch(/^\d+\.\d+$/);
+    const main = r.instructions!.find((i) => i.panta)!;
+    expect(main.accounts[0]).toEqual({ pubkey: o.wallet, signer: true, writable: true });
+    expect(Buffer.from(main.dataBase64, "base64").toString("hex")).toBe(main.dataHex);
+    expect(r.roles?.every((x) => x.ok)).toBe(true);
+    expect(r.usdcDelta?.startsWith("+")).toBe(true);
+    // The Panta accounts were appended to the simulation (and sliced off before the guard).
+    expect(r.pantaAccountsAfter?.map((x) => x.pubkey)).toEqual([...new Set(main.accounts.map((a) => a.pubkey))]);
+    expect(sims[0]).toBeGreaterThan(r.pantaAccountsAfter!.length);
+    expect(r.pantaAccountsAfter?.find((x) => x.pubkey === o.wallet)).toMatchObject({ exists: true, dataLength: 0 });
+    expect(r.checks.map((x) => x.name)).toEqual(["build", "static guard", "simulation guard"]);
+  });
+
+  it("a claim paying someone else's account, or writing the mint, fails the static guard", async () => {
+    const thief = Keypair.generate().publicKey.toBase58();
+    const r1 = await runClaimCheck(await claimOpts(), tamperedClaim((m) => (m.accounts[2] = { ...m.accounts[2], pubkey: thief })));
+    expect(r1.ok).toBe(false);
+    expect(r1.failed).toBe("static guard: PAYOUT_ACCOUNT");
+    expect(r1.roles?.find((x) => x.slot === 2)?.ok).toBe(false);
+    const r2 = await runClaimCheck(await claimOpts(), tamperedClaim((m) => (m.accounts[4] = { ...m.accounts[4], isWritable: true })));
+    expect(r2.failed).toBe("static guard: ACCOUNT_ROLES");
+  });
+
+  it("a simulation that pays less than winningShares fails the simulation guard, and still prints the accounts", async () => {
+    const o = await claimOpts();
+    const c = readOnlyChain();
+    const r = await runClaimCheck(o, {
+      buildClaim: async (req) => ({ ...(await panta.buildClaim(req)), winningShares: "999.00" }),
+      chain: c,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.failed).toMatch(/^(static guard|simulation guard): /);
+    const wrongMarket = await runClaimCheck(o, {
+      buildClaim: async (req) => ({ ...(await panta.buildClaim(req)), marketId: Keypair.generate().publicKey.toBase58() }),
+      chain: c,
+    });
+    expect(wrongMarket.failed).toBe("build: BUILD_MISMATCH");
+  });
+});
+
 function run(env: Record<string, string | undefined>, args: string[] = []) {
   const base = { ...process.env };
   for (const k of [
@@ -220,6 +289,57 @@ describe("panta-build-check script", () => {
     const r = await run({ MOCK_PANTA: "true", PANTA_API_KEY: "Zq9x7" });
     expect(r.code).toBe(1);
     expect(r.out).not.toContain("Zq9x7");
+  }, 60_000);
+
+  it("--claim (mock): simulates only, prints the layout and says position verification is unavailable", async () => {
+    const r = await run({ MOCK_PANTA: "true" }, ["--claim"]);
+    expect(r.code).toBe(0);
+    for (const s of [
+      "input: CLAIM",
+      "(PANTA) dataLength=",
+      "data hex:",
+      "data base64:",
+      "account roles",
+      "inner programs:",
+      "simulated USDC delta: +",
+      "Panta instruction accounts after simulation:",
+      "on-chain position verification: UNAVAILABLE",
+      "result: PASS (nothing was signed or sent)",
+    ])
+      expect(r.out).toContain(s);
+  }, 60_000);
+
+  it("--claim refuses --amount/--side and needs no fee pin or stake cap", async () => {
+    expect((await run({ MOCK_PANTA: "true" }, ["--claim", "--amount", "1"])).code).toBe(1);
+    expect((await run({ MOCK_PANTA: "true" }, ["--claim", "--side", "yes"])).code).toBe(1);
+    const m = Keypair.generate().publicKey.toBase58();
+    const w = Keypair.generate().publicKey.toBase58();
+    // Real mode without --wallet is usage (1); without PANTA_FEE_MODEL/MAX_STAKE_USDC it still runs (and fails at Panta here).
+    const base = { PANTA_PROGRAM_IDS: m, SOLANA_RPC_URL: "https://rpc.example/", PANTA_BASE_URL: "https://evil.example/api/v1" };
+    expect((await run(base, ["--claim", "--market", m])).code).toBe(1);
+    const r = await run(base, ["--claim", "--market", m, "--wallet", w]);
+    expect(r.code).toBe(3);
+    expect(r.out).toContain("result: FAIL at error:");
+  }, 120_000);
+
+  it("--claim real mode never prints the Panta key or any part of the RPC URL's key", async () => {
+    const wallet = Keypair.generate().publicKey.toBase58();
+    const pantaKey = Keypair.generate().publicKey.toBase58();
+    const rpcPathKey = "pathsecret0123456789";
+    const env = {
+      PANTA_API_KEY: pantaKey,
+      PANTA_BASE_URL: "https://evil.example/api/v1", // refused by lib/panta.ts before any request
+      PANTA_PROGRAM_IDS: Keypair.generate().publicKey.toBase58(),
+      SOLANA_RPC_URL: `https://user:pw0rd123@rpc.example/${rpcPathKey}/?api-key=${wallet}`,
+    };
+    const r = await run(env, ["--claim", "--market", pantaKey, "--wallet", wallet]);
+    expect(r.code).toBe(3);
+    expect(r.out).toContain("PANTA_BASE_URL must be");
+    for (const s of [pantaKey, wallet, rpcPathKey, "pw0rd123", "rpc.example/"]) expect(r.out).not.toContain(s);
+    expect(r.out).toContain("[redacted]");
+    const short = await run({ ...env, PANTA_API_KEY: "Zq9x7" }, ["--claim", "--market", pantaKey, "--wallet", wallet]);
+    expect(short.code).toBe(1);
+    expect(short.out).not.toContain("Zq9x7");
   }, 60_000);
 
   it("has no signing or sending path: no private key, no send, no wallet signature", () => {

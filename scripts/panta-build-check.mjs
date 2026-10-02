@@ -6,6 +6,14 @@
  *   node --env-file=.env.local scripts/panta-build-check.mjs --market <marketId> --side yes|no \
  *        --amount 5.00 --wallet <pubkey> [--slippage-bps 200]
  *   MOCK_PANTA=true node scripts/panta-build-check.mjs        # mock fixtures and mock chain
+ *   node --env-file=.env.local scripts/panta-build-check.mjs --claim --market <marketId> --wallet <pubkey>
+ *
+ * --claim (G-05): one POST /claimbuild/, assemble, simulate ONLY, run the app's claim guard (no USDC
+ * out, payout >= winningShares into the user's own USDC ATA), then print every instruction's program,
+ * accounts (signer/writable) and data (hex + base64), the role table, the inner programs, the USDC
+ * delta, and the post-simulation owner / size / data of each account the Panta instruction lists, so
+ * Panta's real claim and position layout can be learned. On-chain position verification is reported
+ * as unavailable (the app refuses real claims until a reader exists). No --amount or --side.
  *
  * What it does (lib/build-check.ts): the app's quote logic (one POST /primaryorderquote/,
  * plus one re-quote when the fee is on top), one POST /primaryorderbuild/, assembles the
@@ -84,9 +92,16 @@ function args() {
   };
   if (a.includes("--help") || a.includes("-h")) {
     out("usage: node scripts/panta-build-check.mjs --market <marketId> --side yes|no --amount <<=5> --wallet <pubkey> [--slippage-bps 200]");
+    out("       node scripts/panta-build-check.mjs --claim --market <marketId> --wallet <pubkey>   (simulate a claim only)");
     process.exit(0);
   }
+  const claim = a.includes("--claim");
+  if (claim && (a.includes("--amount") || a.includes("--side") || a.includes("--slippage-bps"))) {
+    process.stderr.write("error: --claim takes only --market and --wallet\n");
+    process.exit(1);
+  }
   return {
+    claim,
     market: get("market"),
     side: (get("side") ?? "yes").toLowerCase(),
     amount: get("amount") ?? "5.00",
@@ -128,9 +143,19 @@ try {
   const mock = env.isMockMode();
 
   let market = a.market;
-  if (!market && mock) {
+  if (!market && mock && !a.claim) {
     const { default: markets } = await import(join(root, "fixtures/markets.json"), { with: { type: "json" } });
     market = markets.find((m) => m.phase === "primary")?.marketId;
+  }
+  let wallet = a.wallet;
+  if (!wallet && mock) {
+    const bs58 = (await import("bs58")).default;
+    wallet = bs58.encode(randomBytes(32));
+  }
+  if (!wallet || !isPubkey(wallet)) fail("--wallet <pubkey> is required (a public key; never a private key)");
+  if (!market && mock && a.claim) {
+    // Mock: the demo wallet's winning market.
+    market = (await panta.getPositions(wallet)).positions.find((p) => p.claimable && !p.claimed)?.marketId;
   }
   if (!market || !isPubkey(market)) fail("--market <marketId> (a base58 public key) is required");
   if (a.side !== "yes" && a.side !== "no") fail("--side must be yes or no");
@@ -140,27 +165,23 @@ try {
     fail(e.message);
   }
   if (!/^\d{1,3}$/.test(a.slippage)) fail("--slippage-bps must be an integer");
-  let wallet = a.wallet;
-  if (!wallet && mock) {
-    const bs58 = (await import("bs58")).default;
-    wallet = bs58.encode(randomBytes(32));
-  }
-  if (!wallet || !isPubkey(wallet)) fail("--wallet <pubkey> is required (a public key; never a private key)");
 
+  // A claim moves no stake, so it needs neither the fee pin nor the launch cap (as in the app, E-09).
   let fee;
-  try {
-    fee = feeConfig.feeConfigFromEnv(process.env, mock);
-  } catch (e) {
-    fail(e.message); // names the variable, never its value
-  }
-
   let capBase;
-  try {
-    capBase = stakeCap.stakeCapFromEnv(process.env, mock);
-  } catch (e) {
-    fail(e.message); // names the variable, never its value
+  if (!a.claim) {
+    try {
+      fee = feeConfig.feeConfigFromEnv(process.env, mock);
+    } catch (e) {
+      fail(e.message); // names the variable, never its value
+    }
+    try {
+      capBase = stakeCap.stakeCapFromEnv(process.env, mock);
+    } catch (e) {
+      fail(e.message); // names the variable, never its value
+    }
+    if (check.parseCheckAmount(a.amount) > capBase) fail(`--amount must be at most MAX_STAKE_USDC (${stakeCap.formatCap(capBase)})`);
   }
-  if (check.parseCheckAmount(a.amount) > capBase) fail(`--amount must be at most MAX_STAKE_USDC (${stakeCap.formatCap(capBase)})`);
 
   let programIds;
   let chain;
@@ -180,6 +201,32 @@ try {
   }
 
   out(`mode: ${mock ? "MOCK (fixtures, mock chain)" : "REAL (live Panta + RPC; build and simulate only, nothing is signed or sent)"}`);
+  if (a.claim) {
+    out(`input: CLAIM market=${market} wallet=${wallet}`);
+    out(`config: programs=${[...programIds].join(",")}`);
+    out(`user USDC ATA (payout): ${constants.associatedTokenAddress(wallet, constants.USDC_MINT)}`);
+    const r = await check.runClaimCheck({ marketId: market, wallet, pantaProgramIds: programIds }, { buildClaim: panta.buildClaim, chain });
+    if (r.claim) {
+      out(`claim: outcome=${r.claim.outcome} winningShares=${r.claim.winningShares} lastValidBlockHeight=${r.claim.lastValidBlockHeight ?? "(none)"}`);
+      for (const [k, v] of Object.entries(r.claim.derived)) out(`  derived.${k}: ${v}`);
+    }
+    for (const ix of r.instructions ?? []) {
+      out(`instruction ${ix.index}: program=${ix.programId}${ix.panta ? " (PANTA)" : ""} dataLength=${ix.dataLength}`);
+      out(`  data hex: ${ix.dataHex}`);
+      out(`  data base64: ${ix.dataBase64}`);
+      ix.accounts.forEach((x, i) => out(`  [${i}] ${x.signer ? "s" : "-"}${x.writable ? "w" : "-"} ${x.pubkey}`));
+    }
+    printCommon(r);
+    out("Panta instruction accounts after simulation:");
+    for (const x of r.pantaAccountsAfter ?? [])
+      out(
+        x.exists
+          ? `  ${x.pubkey}: owner=${x.owner} executable=${x.executable} lamports=${x.lamports} dataLength=${x.dataLength} data(base64, first ${check.CLAIM_DATA_PRINT_MAX} bytes)=${x.dataBase64}`
+          : `  ${x.pubkey}: (no account)`,
+      );
+    out("on-chain position verification: UNAVAILABLE (no position reader yet; the app refuses real claims with CLAIM_UNVERIFIED)");
+    finish(r);
+  }
   out(`input: market=${market} side=${a.side} amount=${a.amount} wallet=${wallet} slippageBps=${a.slippage}`);
   out(`config: PANTA_FEE_MODEL=${fee.model} PANTA_FEE_CAP_BPS=${fee.feeCapBps} MAX_STAKE_USDC=${stakeCap.formatCap(capBase)} programs=${[...programIds].join(",")}`);
   out(`user USDC ATA: ${constants.associatedTokenAddress(wallet, constants.USDC_MINT)}`);
@@ -202,6 +249,14 @@ try {
   if (r.feeModel) out(`fee model: ${r.feeModel} (${r.quotes} quote call(s))`);
   if (r.order)
     out(`order args: amount=${r.order.amount} side=${r.order.side} shares=${r.order.shares} maxSlippageBps=${r.order.slippageBps} onChainMinShares=${r.order.minShares}`);
+  printCommon(r);
+  finish(r);
+} catch (err) {
+  const e = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  fail(e);
+}
+
+function printCommon(r) {
   if (r.roles) {
     out("account roles (PANTA_ACCOUNT_ROLES, assumed order):");
     for (const x of r.roles) out(`  [${x.slot}] ${x.ok ? "ok  " : "FAIL"} ${x.role}: ${x.actual}${x.expected !== "-" && !x.ok ? ` (expected ${x.expected})` : ""}`);
@@ -212,6 +267,9 @@ try {
     out("simulation logs (last 20):");
     for (const l of r.simulationLogs) out(`  ${l}`);
   }
+}
+
+function finish(r) {
   out("checks:");
   for (const c of r.checks) out(`  ${c.ok ? "PASS" : "FAIL"} ${c.name}: ${c.detail}`);
   if (r.ok) {
@@ -220,7 +278,4 @@ try {
   }
   out(`result: FAIL at ${r.failed} (nothing was signed or sent)`);
   process.exit(3);
-} catch (err) {
-  const e = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-  fail(e);
 }

@@ -181,6 +181,12 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    the simulated USDC delta. `--amount` is at most 5 and at most `MAX_STAKE_USDC`. Exit 0 = every check passed, 3 = a check failed (named),
    1 = usage/config error. The Panta key and every part of `SOLANA_RPC_URL` are redacted from all output.
    Needs `PANTA_API_KEY`, `PANTA_FEE_MODEL`, `MAX_STAKE_USDC`, `PANTA_PROGRAM_IDS` and `SOLANA_RPC_URL`; in mock: `MOCK_PANTA=true`.
+   **`--claim --market <marketId> --wallet <pubkey>`** (G-05) builds one claim and *simulates* it only, with the
+   app's claim guard, and prints each instruction's program, accounts (signer/writable) and data (hex and
+   base64), the role table, inner programs, the USDC payout, and the post-simulation owner/size/data (first
+   512 bytes) of every account the Panta instruction lists, to learn the position layout. It reports on-chain
+   position verification as unavailable. Same guarantees (no key, nothing signed or sent, redaction, exit
+   codes); needs only `PANTA_API_KEY`, `PANTA_PROGRAM_IDS` and `SOLANA_RPC_URL`.
 
    **Order arguments** are decoded strictly against an *assumed* layout (`PRIMARY_ORDER_LAYOUT` in
    `lib/tx-guard.ts`, 27 bytes: discriminator, amount u64, side u8, shares u64, max slippage u16 bps; Panta
