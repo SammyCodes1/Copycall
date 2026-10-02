@@ -168,6 +168,13 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    publishes no IDL). The amount must equal the quoted deposit, the side must match the trade, shares must be
    above zero, slippage no looser than the setting, and the on-chain minimum no lower than the review's
    "Min. shares" (Panta's `expectedShares` too). Any other length or value fails closed.
+   **Account roles (E-06)** are also *assumed* (`PANTA_ACCOUNT_ROLES`): slot 0 the user (signer, writable),
+   1 the quoted market, 2 the user's own USDC ATA (writable; the USDC source, or for claims the payout account),
+   4 the USDC mint, 5 the SPL Token program; at least 8 accounts for an order and 7 for a claim, with the wallet
+   and its USDC ATA in no other slot. The position PDA isn't derived (its seeds are unknown).
+   **Claim minimum (E-04):** Panta's `winningShares` must equal the claimable shares from `GET /positions`,
+   the on-chain position where the chain reader can decode it (mock only so far), and be no less than the
+   guaranteed shares of the copies recorded here (shares × (1 − 5 %) each). The payout must be at least that.
 3. The wallet signs those exact bytes. `POST /api/copy/confirm` `{orderId, signedTransaction}`: the message
    hash must match, the signature must verify for the session wallet and be unused. The server broadcasts,
    waits for confirmation, re-checks the landed transaction (including the USDC that actually left the wallet,

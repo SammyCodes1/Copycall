@@ -112,6 +112,46 @@ export type GuardContext = {
  */
 export const PRIMARY_ORDER_LAYOUT = { length: 27, amount: 8, side: 16, shares: 17, slippage: 25 } as const;
 
+/**
+ * E-06: ASSUMED account order of the Panta instructions (flagged for the
+ * Auditor, like the data layout; Panta publishes no IDL). Fail closed: a build
+ * whose accounts are in other roles is refused.
+ *   primary_order_usdc: 0 user (signer, writable), 1 market (the quoted market),
+ *     2 user's USDC ATA (writable; the USDC source), 3 vault, 4 USDC mint,
+ *     5 SPL Token program, 6 System program, 7 position
+ *   claim_win_usdc: 0 user (signer, writable), 1 market, 2 user's USDC ATA
+ *     (writable; the payout account), 3 vault, 4 USDC mint, 5 SPL Token program,
+ *     6 position
+ * The position PDA's seeds are unknown for the real program, so it isn't derived
+ * here; the simulation still checks every user token account.
+ */
+export const PANTA_ACCOUNT_ROLES = { user: 0, market: 1, userUsdc: 2, mint: 4, tokenProgram: 5 } as const;
+const MIN_PANTA_ACCOUNTS: Record<TxKind, number> = { copy: 8, claim: 7 };
+
+function checkAccountRoles(ix: PantaInstruction, ctx: GuardContext, userUsdcAta: string): void {
+  const R = PANTA_ACCOUNT_ROLES;
+  const a = ix.accounts;
+  if (a.length < MIN_PANTA_ACCOUNTS[ctx.kind])
+    throw new TxRejected("ACCOUNT_ROLES", "Order accounts have an unexpected layout");
+  if (a[R.user].pubkey !== ctx.feePayer || !a[R.user].isSigner || !a[R.user].isWritable)
+    throw new TxRejected("ACCOUNT_ROLES", "The order isn't signed by your wallet in the user slot");
+  if (a[R.market].pubkey !== ctx.marketId)
+    throw new TxRejected("MARKET_MISMATCH", "Instruction is for a different market");
+  if (a[R.userUsdc].pubkey !== userUsdcAta || !a[R.userUsdc].isWritable)
+    throw new TxRejected(
+      ctx.kind === "claim" ? "PAYOUT_ACCOUNT" : "USDC_SOURCE",
+      ctx.kind === "claim" ? "The claim doesn't pay into your USDC account" : "The order doesn't pay from your USDC account",
+    );
+  if (a[R.mint].pubkey !== USDC_MINT || a[R.tokenProgram].pubkey !== TOKEN_PROGRAM_ID)
+    throw new TxRejected("ACCOUNT_ROLES", "The order isn't for USDC on the SPL Token program");
+  // The user, the market and the user's USDC account appear only in their own slots.
+  for (let i = 0; i < a.length; i++) {
+    if (i !== R.user && a[i].pubkey === ctx.feePayer) throw new TxRejected("ACCOUNT_ROLES", "Your wallet appears twice");
+    if (i !== R.userUsdc && a[i].pubkey === userUsdcAta)
+      throw new TxRejected("ACCOUNT_ROLES", "Your USDC account appears twice");
+  }
+}
+
 export type PrimaryOrderArgs = { amount: bigint; side: "yes" | "no"; shares: bigint; slippageBps: number };
 
 /** Strict decode of primary_order_usdc data (discriminator already checked). Throws TxRejected. */
@@ -185,6 +225,7 @@ export function checkInstructions(ixs: PantaInstruction[], ctx: GuardContext): v
   let tokenOut = 0n;
   let expectedOut = 0n; // what the fee model says the order costs, from the decoded deposit
   const main = ixs.find((ix) => ctx.pantaProgramIds.has(ix.programId))!;
+  checkAccountRoles(main, ctx, userUsdcAta); // E-06
   if (ctx.kind === "copy") {
     // Strict decode of primary_order_usdc (layout above). Fails closed.
     if (!ctx.copyOutflow) throw new TxRejected("NO_FEE_MODEL", "No fee model for this copy");
@@ -204,8 +245,7 @@ export function checkInstructions(ixs: PantaInstruction[], ctx: GuardContext): v
     // B3-03: the payout must go to the user's own USDC ATA, and that ATA must be in the claim.
     if (ctx.claimMinUsdcInBase === undefined || ctx.claimMinUsdcInBase <= 0n)
       throw new TxRejected("NO_CLAIM_AMOUNT", "No claim amount to check");
-    if (!main.accounts.some((a) => a.pubkey === associatedTokenAddress(ctx.feePayer, USDC_MINT) && a.isWritable))
-      throw new TxRejected("PAYOUT_ACCOUNT", "The claim doesn't pay into your USDC account");
+    // (the user's USDC ATA in the payout slot is enforced by checkAccountRoles, E-06)
   }
   for (const ix of ixs) {
     const data = Buffer.from(ix.data, "base64");
@@ -403,6 +443,12 @@ export interface ChainReader {
   getTokenAccounts(owner: string): Promise<AccountSnapshot[]>;
   getLamports(owner: string): Promise<number>;
   simulate(tx: VersionedTransaction, addresses: string[]): Promise<SimulationResult>;
+  /**
+   * E-04: winning-side shares (base units) in the user's on-chain position, if this
+   * reader can decode Panta's position account; null if there is none. Absent on the
+   * real RPC chain until the position layout is verified.
+   */
+  getPositionSharesBase?(marketId: string, wallet: string, side: "yes" | "no"): Promise<bigint | null>;
 }
 
 // SPL token account layout: mint 0..32, owner 32..64, amount 64..72, then delegate/state/close authority.

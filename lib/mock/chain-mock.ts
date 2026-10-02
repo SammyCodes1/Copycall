@@ -316,6 +316,12 @@ export function createMockChain(): MockChain {
         .map(([pubkey, a]) => ({ pubkey, data: encodeTokenAccount(a), lamports: Number(TOKEN_ACCOUNT_RENT) }));
     },
 
+    async getPositionSharesBase(marketId, wallet, side) {
+      seedWallet(wallet);
+      const p = state.positions.get(wallet)?.get(`${marketId}|${side}`);
+      return p && !p.claimed ? p.sharesBase : null;
+    },
+
     async getLamports(owner) {
       seedWallet(owner);
       return Number(state.lamports.get(owner) ?? 0n);

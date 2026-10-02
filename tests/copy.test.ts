@@ -815,11 +815,39 @@ describe("B3-03: claims must pay the winnings into the user's own USDC ATA", () 
     expect(logs.join("\n")).toContain("PAYOUT_ACCOUNT");
   });
 
-  it("refuses a claim that lists the user's ATA but pays someone else (simulation)", async () => {
+  it("refuses a claim that lists the user's ATA but pays someone else (static role check, E-06)", async () => {
     const u = await signedInUser();
     const win = await winFor(u);
     const logs: string[] = [];
     expect(await code(buildClaimTx(rerouted(true, logs), post("/cb", { marketId: win.marketId }, u)))).toBe("TX_REJECTED");
+    expect(logs.join("\n")).toContain("PAYOUT_ACCOUNT");
+  });
+
+  it("refuses a claim whose simulated payout into the user's ATA is short (simulation)", async () => {
+    const u = await signedInUser();
+    const win = await winFor(u);
+    const logs: string[] = [];
+    const chain = getSharedMockChain();
+    const userAta = associatedTokenAddress(u.wallet, USDC_MINT);
+    const d = deps({
+      log: (m: string) => logs.push(m),
+      chain: {
+        ...chain,
+        simulate: async (tx, addresses) => {
+          const r = await chain.simulate(tx, addresses);
+          return {
+            ...r,
+            accounts: r.accounts.map((a, i) => {
+              if (!a || addresses[i] !== userAta) return a;
+              const data = Buffer.from(a.data);
+              data.writeBigUInt64LE(data.readBigUInt64LE(64) - 1n, 64); // the payout went 1 base unit elsewhere
+              return { ...a, data };
+            }),
+          };
+        },
+      },
+    });
+    expect(await code(buildClaimTx(d, post("/cb", { marketId: win.marketId }, u)))).toBe("TX_REJECTED");
     expect(logs.join("\n")).toContain("PAYOUT_TOO_LOW");
   });
 
@@ -1278,5 +1306,189 @@ describe("E-02: a landed copy is never left unrecorded after VERIFY_UNAVAILABLE"
     await expect(
       pollConfirm(async () => Promise.reject(new FlowError("VERIFY_UNAVAILABLE", "x")), "o1", {}, async () => {}),
     ).rejects.toMatchObject({ code: "VERIFY_UNAVAILABLE" });
+  });
+});
+
+describe("E-06: the Panta instruction's account roles are checked (assumed order, fail closed)", () => {
+  type Ix = { programId: string; accounts: { pubkey: string; isSigner: boolean; isWritable: boolean }[]; data: string };
+  const mutatedCopy = (mutate: (main: Ix, wallet: string) => void, logs: string[], state = createCopyMemoryState()) =>
+    deps({
+      state,
+      log: (m: string) => logs.push(m),
+      panta: {
+        ...deps().panta,
+        buildPrimaryOrder: async (req) => {
+          const b = await panta.buildPrimaryOrder(req);
+          const ixs = structuredClone(b.instructions) as Ix[];
+          mutate(ixs.find((i) => i.programId === MOCK_PROGRAM_ID)!, req.wallet);
+          return { ...b, instructions: ixs };
+        },
+      },
+    });
+
+  const attempt = async (mutate: (main: Ix, wallet: string) => void) => {
+    const u = await signedInUser();
+    const logs: string[] = [];
+    const state = createCopyMemoryState();
+    const d = mutatedCopy(mutate, logs, state);
+    const q = await quoteCopy(d, get("/q", u), trade.id);
+    const res = await code(buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id));
+    expect(state.orders.size).toBe(res === "OK" ? 1 : 0);
+    return { res, log: logs.join("\n") };
+  };
+
+  it("the unmodified mock build passes", async () => {
+    expect((await attempt(() => {})).res).toBe("OK");
+  });
+
+  it("refuses an order for another market in the market slot", async () => {
+    const other = Keypair.generate().publicKey.toBase58();
+    const r = await attempt((m) => (m.accounts[1] = { ...m.accounts[1], pubkey: other }));
+    expect(r).toMatchObject({ res: "TX_REJECTED" });
+    expect(r.log).toContain("MARKET_MISMATCH");
+  });
+
+  it("refuses an order whose user slot isn't the signing wallet", async () => {
+    const other = Keypair.generate().publicKey.toBase58();
+    const r1 = await attempt((m) => (m.accounts[0] = { ...m.accounts[0], pubkey: other, isSigner: false }));
+    expect(r1.res).toBe("TX_REJECTED");
+    const r2 = await attempt((m) => (m.accounts[0] = { ...m.accounts[0], isSigner: false }));
+    expect(r2.res).toBe("TX_REJECTED");
+    expect(r2.log).toContain("ACCOUNT_ROLES");
+  });
+
+  it("refuses an order whose USDC source isn't the user's own ATA", async () => {
+    const thief = Keypair.generate().publicKey.toBase58();
+    getSharedMockChain().seedWallet(thief);
+    const r = await attempt(
+      (m) => (m.accounts[2] = { ...m.accounts[2], pubkey: associatedTokenAddress(thief, USDC_MINT) }),
+    );
+    expect(r.res).toBe("TX_REJECTED");
+    expect(r.log).toContain("USDC_SOURCE");
+  });
+
+  it("refuses swapped roles, a wrong mint/token program and a truncated account list", async () => {
+    const swap = await attempt((m) => ([m.accounts[1], m.accounts[2]] = [m.accounts[2], m.accounts[1]]));
+    expect(swap.res).toBe("TX_REJECTED");
+    const mint = await attempt((m) => (m.accounts[4] = { ...m.accounts[4], pubkey: Keypair.generate().publicKey.toBase58() }));
+    expect(mint.res).toBe("TX_REJECTED");
+    expect(mint.log).toContain("ACCOUNT_ROLES");
+    const short = await attempt((m) => (m.accounts = m.accounts.slice(0, 3)));
+    expect(short.res).toBe("TX_REJECTED");
+  });
+
+  it("claims: the user slot and market slot are enforced too", async () => {
+    const u = await signedInUser();
+    const win = (await myPositions(deps(), get("/p", u))).positions.find((p) => p.status === "claimable")!;
+    for (const [slot, field] of [[0, "pubkey"], [1, "pubkey"], [0, "isSigner"]] as const) {
+      const logs: string[] = [];
+      const d = deps({
+        log: (m: string) => logs.push(m),
+        panta: {
+          ...deps().panta,
+          buildClaim: async (req) => {
+            const c = await panta.buildClaim(req);
+            const ixs = structuredClone(c.instructions) as Ix[];
+            const main = ixs.find((i) => i.programId === MOCK_PROGRAM_ID)!;
+            main.accounts[slot] =
+              field === "pubkey"
+                ? { ...main.accounts[slot], pubkey: Keypair.generate().publicKey.toBase58() }
+                : { ...main.accounts[slot], isSigner: false };
+            return { ...c, instructions: ixs };
+          },
+        },
+      });
+      expect(await code(buildClaimTx(d, post("/cb", { marketId: win.marketId }, u)))).toBe("TX_REJECTED");
+    }
+  });
+});
+
+describe("E-04: the claim minimum doesn't trust Panta's winningShares", () => {
+  const winFor = async (u: User) =>
+    (await myPositions(deps(), get("/p", u))).positions.find((p) => p.status === "claimable")!;
+
+  it("refuses a build that understates winningShares (0.01 vs the real position)", async () => {
+    const u = await signedInUser();
+    const win = await winFor(u);
+    expect(usdcToBase(win.shares)).toBeGreaterThan(10_000n);
+    const logs: string[] = [];
+    const state = createCopyMemoryState();
+    const d = deps({
+      state,
+      log: (m: string) => logs.push(m),
+      panta: { ...deps().panta, buildClaim: async (req) => ({ ...(await panta.buildClaim(req)), winningShares: "0.01" }) },
+    });
+    expect(await code(buildClaimTx(d, post("/cb", { marketId: win.marketId }, u)))).toBe("TX_REJECTED");
+    expect(logs.join("\n")).toContain("CLAIM_MISMATCH");
+    expect(state.orders.size).toBe(0);
+  });
+
+  it("refuses when Panta's positions agree with the build but the on-chain position doesn't", async () => {
+    const u = await signedInUser();
+    const win = await winFor(u);
+    const lie = (r: Awaited<ReturnType<typeof panta.getPositions>>) => ({
+      ...r,
+      positions: r.positions.map((p) => (p.marketId === win.marketId ? { ...p, shares: "0.01" } : p)),
+    });
+    const logs: string[] = [];
+    const d = deps({
+      log: (m: string) => logs.push(m),
+      panta: {
+        ...deps().panta,
+        buildClaim: async (req) => ({ ...(await panta.buildClaim(req)), winningShares: "0.01" }),
+        getPositions: async (w) => lie(await panta.getPositions(w)),
+      },
+    });
+    expect(await code(buildClaimTx(d, post("/cb", { marketId: win.marketId }, u)))).toBe("TX_REJECTED");
+    expect(logs.join("\n")).toContain("on-chain position");
+  });
+
+  it("without an on-chain reader, recorded copies still set a floor", async () => {
+    const u = await signedInUser();
+    const win = await winFor(u);
+    const state = createCopyMemoryState();
+    const chain = getSharedMockChain();
+    const { getPositionSharesBase: _drop, ...noPositionReader } = chain;
+    void _drop;
+    const store = createMemoryCopyStore(state);
+    // We recorded a copy of 20 shares on the winning side; Panta (consistently) claims 1 share.
+    const recorded = {
+      id: randomUUID(),
+      leaderTradeId: randomUUID(),
+      marketId: win.marketId,
+      side: win.side,
+      amountUsdc: "10.000000",
+      feeUsdc: "0.000000",
+      shares: "20.000000",
+      signature: bs58.encode(Buffer.alloc(64, 7)),
+      status: "confirmed" as const,
+      createdAt: Date.now(),
+    };
+    const lie = (r: Awaited<ReturnType<typeof panta.getPositions>>) => ({
+      ...r,
+      positions: r.positions.map((p) => (p.marketId === win.marketId ? { ...p, shares: "1" } : p)),
+    });
+    const logs: string[] = [];
+    const d = deps({
+      copy: { ...store, listCopies: async () => [recorded] },
+      log: (m: string) => logs.push(m),
+      chain: noPositionReader,
+      panta: {
+        ...deps().panta,
+        buildClaim: async (req) => ({ ...(await panta.buildClaim(req)), winningShares: "1" }),
+        getPositions: async (w) => lie(await panta.getPositions(w)),
+      },
+    });
+    expect(await code(buildClaimTx(d, post("/cb", { marketId: win.marketId }, u)))).toBe("TX_REJECTED");
+    expect(logs.join("\n")).toContain("recorded copies");
+  });
+
+  it("an honest claim stores the independently checked minimum", async () => {
+    const u = await signedInUser();
+    const win = await winFor(u);
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const b = await buildClaimTx(d, post("/cb", { marketId: win.marketId }, u));
+    expect(state.orders.get(b.orderId)?.shares).toBe(baseToUsdc(usdcToBase(win.shares)));
   });
 });

@@ -589,6 +589,62 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
 
 // ---------------------------------------------------------------- claim build
 
+/**
+ * E-04: the claim minimum is not Panta's `winningShares` alone. It is the
+ * largest of:
+ *  - winningShares from the claim build;
+ *  - the on-chain position, when the chain reader can decode it (mock chain;
+ *    the real program's position layout is unverified, so real mode skips it);
+ *  - a guaranteed lower bound from OUR recorded copies of this market and the
+ *    winning side: each copy got at least expectedShares x (1 - max slippage).
+ * And Panta must agree with itself: the positions endpoint has to list the same
+ * claimable shares. A build that understates any of these is refused. 1 USDC
+ * per winning share, no claim fee (Panta documents none).
+ */
+async function independentClaimMin(
+  d: FlowDeps,
+  session: { uid: string; w: string },
+  marketId: string,
+  side: TradeSide,
+  winning: bigint,
+): Promise<bigint> {
+  let positions: PositionsResponse;
+  try {
+    positions = await d.panta.getPositions(session.w);
+  } catch (err) {
+    fromPanta(err);
+  }
+  const listed = positions.positions.filter(
+    (p) => p.marketId === marketId && fromApiSide(p.side) === side && p.claimable && !p.claimed,
+  );
+  const listedBase = listed.reduce((n, p) => n + usdcToBase(p.shares), 0n);
+  if (listed.length === 0 || listedBase !== winning) {
+    d.log?.(`claim build CLAIM_MISMATCH (positions)`);
+    throw rejected("Panta's claim doesn't match your position");
+  }
+  let min = winning;
+  const onChain = d.chain.getPositionSharesBase
+    ? await d.chain.getPositionSharesBase(marketId, session.w, toApiSide(side))
+    : null;
+  if (onChain !== null) {
+    if (onChain !== winning) {
+      d.log?.(`claim build CLAIM_MISMATCH (on-chain position)`);
+      throw rejected("Panta's claim doesn't match your on-chain position");
+    }
+    if (onChain > min) min = onChain;
+  }
+  const copies = (await d.copy.listCopies(session.uid, 500)).filter((c) => c.marketId === marketId && c.side === side);
+  const recordedMin = copies.reduce(
+    (n, c) => n + (usdcToBase(c.shares) * BigInt(10_000 - MAX_SLIPPAGE_BPS)) / 10_000n,
+    0n,
+  );
+  if (recordedMin > winning) {
+    d.log?.(`claim build CLAIM_MISMATCH (recorded copies)`);
+    throw rejected("Panta's claim is smaller than the copies you recorded here");
+  }
+  return min;
+}
+
 /** POST /api/claim/build { marketId } */
 export async function buildClaimTx(d: FlowDeps, request: Request): Promise<BuiltTx & { winningShares: string }> {
   assertSameOrigin(request, d.auth.appOrigin);
@@ -607,6 +663,7 @@ export async function buildClaimTx(d: FlowDeps, request: Request): Promise<Built
   if (c.wallet !== session.w || c.marketId !== marketId)
     throw rejected("Panta built a claim for a different wallet or market");
   if (usdcToBase(c.winningShares) <= 0n) throw new AuthError(409, "NOT_CLAIMABLE", "Nothing to claim for this market");
+  const claimMin = await independentClaimMin(d, session, marketId, fromApiSide(c.outcome), usdcToBase(c.winningShares));
 
   const built = await assembleAndStore(d, {
     kind: "claim",
@@ -617,15 +674,15 @@ export async function buildClaimTx(d: FlowDeps, request: Request): Promise<Built
     recentBlockhash: c.recentBlockhash,
     lastValidBlockHeight: c.lastValidBlockHeight ?? null,
     maxUsdcOutBase: 0n, // a claim may never move USDC out of the wallet
-    claimMinUsdcInBase: usdcToBase(c.winningShares), // B3-03: and must pay the winnings into the user's USDC ATA
+    claimMinUsdcInBase: claimMin, // B3-03 / E-04: must pay at least this into the user's own USDC ATA
     order: {
       leaderTradeId: null,
       side: fromApiSide(c.outcome),
-      amountUsdc: c.winningShares,
+      amountUsdc: usdcExact(claimMin),
       feeUsdc: "0",
       feeModel: null,
       maxUsdcOut: "0",
-      shares: c.winningShares,
+      shares: usdcExact(claimMin), // confirm requires a landed payout >= this
       quoteId: null,
       pantaOrderId: null,
     },
