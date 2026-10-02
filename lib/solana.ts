@@ -8,7 +8,7 @@ import "server-only";
  * lib/tx-guard.ts; this file only talks to the RPC.
  */
 import { Connection, PublicKey, type ConfirmedSignatureInfo, type VersionedTransaction } from "@solana/web3.js";
-import type { Chain, ConfirmationState } from "./chain";
+import { SendError, type Chain, type ConfirmationState } from "./chain";
 import { payerUsdcOutFromMeta } from "./landed";
 import { innerProgramIds, innerSystemOps, type InnerSystemOp } from "./tx-guard";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "./solana-constants";
@@ -32,6 +32,57 @@ export function getConnection(): Connection {
 }
 
 export const RPC_TIMEOUT_MS = 15_000;
+
+/**
+ * I-01: web3.js 1.99's sendRawTransaction turns every JSON-RPC error into a SendTransactionError
+ * "Simulation failed" and drops the JSON-RPC code. So the send is one plain JSON-RPC call here, and
+ * the structured error decides refused vs unclear (see SendError). Same params as before:
+ * preflight on at `confirmed`, maxRetries 3.
+ */
+export async function sendRawClassified(raw: Uint8Array): Promise<string> {
+  const url = requireEnv("SOLANA_RPC_URL");
+  if (!/^https:\/\//.test(url)) throw new Error("SOLANA_RPC_URL must be an https URL");
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "sendTransaction",
+    params: [Buffer.from(raw).toString("base64"), { encoding: "base64", preflightCommitment: "confirmed", maxRetries: 3 }],
+  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      redirect: "error",
+      signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new SendError("unclear", null, `send: ${err instanceof Error ? err.name : "network error"}`);
+  }
+  if (!res.ok) throw new SendError("unclear", null, `send: HTTP ${res.status}`);
+  let json: { result?: unknown; error?: { code?: unknown; message?: unknown; data?: unknown } };
+  try {
+    json = (await res.json()) as typeof json;
+  } catch {
+    throw new SendError("unclear", null, "send: unreadable response");
+  }
+  if (typeof json.result === "string") return json.result;
+  return classifySendRpcError(json.error);
+}
+
+/** Pure, for tests: a JSON-RPC sendTransaction error -> SendError (or a success for AlreadyProcessed). */
+export function classifySendRpcError(error: unknown): never {
+  const e = (error ?? {}) as { code?: unknown; message?: unknown; data?: unknown };
+  const code = typeof e.code === "number" ? e.code : null;
+  const msg = typeof e.message === "string" ? e.message.slice(0, 160) : "";
+  const txErr = e.data && typeof e.data === "object" ? (e.data as { err?: unknown }).err : undefined;
+  if (code === -32002 && txErr === "AlreadyProcessed") throw new SendError("unclear", code, "already processed");
+  if (code === -32002 && txErr !== undefined && txErr !== null)
+    throw new SendError("refused", code, `preflight: ${typeof txErr === "string" ? txErr : JSON.stringify(txErr).slice(0, 120)}`);
+  if (code === -32003) throw new SendError("refused", code, "signature verification failed");
+  throw new SendError("unclear", code, `rpc ${code ?? "?"}: ${msg}`);
+}
 
 export type CreatorLookup = { creator: string; verified: false };
 
@@ -151,11 +202,12 @@ export const rpcChain: Chain = {
   },
 
   async send(raw) {
-    return getConnection().sendRawTransaction(raw, {
-      skipPreflight: false,
-      preflightCommitment: "confirmed",
-      maxRetries: 3,
-    });
+    return sendRawClassified(raw);
+  },
+
+  async signatureSeen(signature) {
+    const { value } = await getConnection().getSignatureStatuses([signature], { searchTransactionHistory: true });
+    return value[0] != null;
   },
 
   async waitForConfirmation(signature, lastValidBlockHeight, timeoutMs, blockhash): Promise<ConfirmationState> {
@@ -218,6 +270,7 @@ export const rpcChain: Chain = {
       payerUsdcOutBase,
       innerPrograms,
       innerSystemOps: systemOps,
+      payerPostLamports: typeof tx.meta?.postBalances?.[0] === "number" ? tx.meta.postBalances[0] : null,
     };
   },
 

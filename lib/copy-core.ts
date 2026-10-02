@@ -22,7 +22,7 @@ import nacl from "tweetnacl";
 import { randomUUID } from "node:crypto";
 import { VersionedMessage, VersionedTransaction } from "@solana/web3.js";
 import { AuthError, assertSameOrigin, readJsonBody } from "./auth-core";
-import type { Chain } from "./chain";
+import { SendError, type Chain } from "./chain";
 import { isCanonicalSignature, isCanonicalSignatureB58 } from "./ed25519";
 import type { CopyStore, PendingOrder } from "./copy-store";
 import type { StoredMarket, StoredTrade } from "./data-store";
@@ -822,7 +822,7 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
         throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
       // E-02: remember the signature BEFORE broadcasting, so a lost response can still be confirmed.
       await d.copy.noteBroadcast(order.id, signature);
-      await broadcastWithRetry(d, order, tx);
+      await broadcastWithRetry(d, order, tx, signature);
       justSent = true;
     }
   } else if ("signature" in body) {
@@ -877,39 +877,29 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
 
 /**
  * H-03: an order we never broadcast. "landed": the signature is on chain (verify it normally).
- * "expired": its blockhash is past and there is still no trace of it, so it can never land; the
- * order is failed. "pending": it could still land (or be sent); nothing is changed.
+ * "expired": provablyDead (no trace, blockhash positively invalid); the order is failed.
+ * "pending": it could still land (or be sent), or an RPC read failed; nothing is changed.
  */
 async function resolveUnbroadcast(
   d: FlowDeps,
   order: PendingOrder,
   signature: string,
 ): Promise<"landed" | "expired" | "pending"> {
-  let state: Awaited<ReturnType<Chain["waitForConfirmation"]>>;
   try {
-    state = await d.chain.waitForConfirmation(signature, order.lastValidBlockHeight, 0, blockhashOf(order) ?? undefined);
+    const state = await d.chain.waitForConfirmation(signature, order.lastValidBlockHeight, 0, blockhashOf(order) ?? undefined);
+    if (state === "confirmed" || state === "failed") return "landed";
+    if (await d.chain.getLandedTransaction(signature)) return "landed";
   } catch {
     return "pending"; // RPC trouble: never fail an order on a guess
   }
-  if (state === "confirmed" || state === "failed") return "landed";
-  if (state === "expired") {
-    if (await d.chain.getLandedTransaction(signature)) return "landed";
-    await d.copy.failOrder(order.id);
-    d.log?.(`${order.kind} ${order.id.slice(0, 8)}: never broadcast and expired; failed`);
-    return "expired";
-  }
-  return "pending";
+  if (!(await provablyDead(d, order, signature))) return "pending";
+  await d.copy.failOrder(order.id);
+  d.log?.(`${order.kind} ${order.id.slice(0, 8)}: never broadcast and expired; failed`);
+  return "expired";
 }
 
 /** G-03: how many times one order's signed bytes may be broadcast in total. */
 export const MAX_SENDS = 4;
-
-/** A send error the RPC returned as a refusal (preflight), as opposed to a lost/ambiguous network error. */
-function sendRefused(m: string): boolean {
-  return /failed to send transaction|simulation failed|blockhash not found|signature verification|invalid transaction|transaction.*(rejected|refused)|insufficient/i.test(
-    m,
-  );
-}
 
 function blockhashOf(order: PendingOrder): string | null {
   try {
@@ -919,23 +909,54 @@ function blockhashOf(order: PendingOrder): string | null {
   }
 }
 
-async function stillValid(d: FlowDeps, order: PendingOrder): Promise<boolean> {
+/** I-01: the order's blockhash, tri-state. An RPC error is "unknown", never "expired". */
+async function blockhashState(d: FlowDeps, order: PendingOrder): Promise<"valid" | "expired" | "unknown"> {
   const bh = blockhashOf(order);
-  if (!bh) return false;
+  if (!bh) return "unknown";
   try {
-    return await d.chain.isBlockhashValid(bh);
+    const v = await d.chain.isBlockhashValid(bh);
+    return v === true ? "valid" : v === false ? "expired" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * THE rule for failing an order that hasn't landed (I-01, I-03, J-02, J-06): isBlockhashValid
+ * positively says false (so nothing over this message can land from now on), and only THEN the
+ * signature has no on-chain trace at all (any status, with history, and no transaction). Any RPC
+ * error, or an unreadable stored message, means unknown: false, the order stays pending.
+ */
+export async function provablyDead(d: FlowDeps, order: PendingOrder, signature: string): Promise<boolean> {
+  if ((await blockhashState(d, order)) !== "expired") return false;
+  try {
+    if (await d.chain.signatureSeen(signature)) return false;
+    if (await d.chain.getLandedTransaction(signature)) return false;
+    return true;
   } catch {
     return false;
   }
 }
 
+/** I-01: we couldn't get the tx sent and can't prove it never will land. Not "Nothing was spent". */
+function sendUnconfirmed(orderId: string, signature: string): AuthError {
+  return new AuthError(
+    502,
+    "SEND_UNCONFIRMED",
+    "We couldn't confirm your transaction was sent. We'll keep checking; check your wallet before trying again.",
+    { orderId, signature, retryable: true },
+  );
+}
+
 /**
- * G-03: the first broadcast. A definite refusal is retried with the SAME signed bytes (bounded,
- * only while the blockhash is valid). If it is still refused, the order is failed (so the sweep
- * can never re-send it later) and the user is told nothing was spent. An ambiguous error (lost
- * response, timeout) leaves the order pending and goes on to verification.
+ * G-03 / I-01: the first broadcast. Only a structured refusal (SendError "refused": a -32002
+ * preflight TransactionError or -32003) is retried with the SAME signed bytes, bounded, while the
+ * blockhash is positively valid. Anything unclear (node behind, timeout, 429, unknown) goes on to
+ * verification. If every send was refused, the order is failed and "Nothing was spent" is said
+ * ONLY if provablyDead; otherwise it stays pending (the sweep re-sends and re-checks) and the
+ * answer is a retryable SEND_UNCONFIRMED carrying the signature.
  */
-async function broadcastWithRetry(d: FlowDeps, order: PendingOrder, tx: VersionedTransaction): Promise<void> {
+async function broadcastWithRetry(d: FlowDeps, order: PendingOrder, tx: VersionedTransaction, signature: string): Promise<void> {
   const raw = tx.serialize();
   let lastError = "";
   while (await d.copy.noteSendAttempt(order.id, MAX_SENDS)) {
@@ -944,21 +965,22 @@ async function broadcastWithRetry(d: FlowDeps, order: PendingOrder, tx: Versione
       return;
     } catch (err) {
       const m = err instanceof Error ? err.message : "";
-      if (/already (been )?processed/i.test(m)) return;
-      lastError = m;
-      if (!sendRefused(m)) {
+      if (!(err instanceof SendError) || err.kind !== "refused") {
         d.log?.(`${order.kind} broadcast unclear (${m.slice(0, 120)}); verifying`);
         return;
       }
-      d.log?.(`${order.kind} broadcast refused: ${m.slice(0, 200)}`);
-      if (!(await stillValid(d, order))) break;
+      lastError = m;
+      d.log?.(`${order.kind} broadcast refused (${err.rpcCode}): ${m.slice(0, 200)}`);
+      if ((await blockhashState(d, order)) !== "valid") break;
       await new Promise((r) => setTimeout(r, d.resendDelayMs ?? 500));
     }
   }
-  // Refused every time (or the blockhash ran out): refused sends never reach a leader.
-  await d.copy.failOrder(order.id);
   d.log?.(`${order.kind} broadcast gave up: ${lastError.slice(0, 120)}`);
-  throw rejected("the network refused it. Nothing was spent.");
+  if (await provablyDead(d, order, signature)) {
+    await d.copy.failOrder(order.id);
+    throw rejected("the network refused it. Nothing was spent.");
+  }
+  throw sendUnconfirmed(order.id, signature);
 }
 
 /**
@@ -969,7 +991,7 @@ async function broadcastWithRetry(d: FlowDeps, order: PendingOrder, tx: Versione
 async function maybeResend(d: FlowDeps, order: PendingOrder, signature: string): Promise<boolean> {
   try {
     if (await d.chain.getLandedTransaction(signature)) return false;
-    if (!(await stillValid(d, order))) return false;
+    if ((await blockhashState(d, order)) !== "valid") return false;
     if (!(await d.copy.noteSendAttempt(order.id, MAX_SENDS))) return false;
     const message = VersionedMessage.deserialize(Buffer.from(order.messageBase64, "base64"));
     const tx = new VersionedTransaction(message, [bs58.decode(signature)]);
@@ -1010,18 +1032,20 @@ async function verifyAndRecord(
     d.confirmTimeoutMs ?? 20_000,
     blockhashOf(order) ?? undefined,
   );
-  // B3-06: "expired" is decided from a block height read after the status read; the tx may have
-  // landed in between. Look it up once more before calling it expired.
-  if (state === "expired" && !(await d.chain.getLandedTransaction(signature))) {
-    await d.copy.failOrder(order.id);
-    // F-04: carries the signature, so the client re-checks it (bounded) through the revive path in
-    // case it landed after all; the cron sweep doesn't revive failed orders.
-    throw new AuthError(
-      409,
-      "QUOTE_EXPIRED",
-      "The transaction expired before it landed, so nothing should have been spent. We're double-checking.",
-      { orderId: order.id, signature, revivable: true },
-    );
+  if (state === "expired") {
+    // I-01 / I-03 / I-04: "expired" from the block height is only a hint. Fail ONLY for our own
+    // broadcast signature (or an order we never broadcast), and only if provablyDead.
+    const ours = order.broadcastSignature === null || order.broadcastSignature === signature;
+    if (revive || (ours && (await provablyDead(d, order, signature)))) {
+      if (!revive) await d.copy.failOrder(order.id);
+      // F-04: carries the signature, so the client re-checks it (bounded) through the revive path.
+      throw new AuthError(409, "QUOTE_EXPIRED", "The transaction expired before it landed, so nothing was spent.", {
+        orderId: order.id,
+        signature,
+        revivable: true,
+      });
+    }
+    // Not proven: it may have landed (B3-06) or still land; the lookup below decides.
   }
   if (state === "pending") return { status: "pending", signature };
 

@@ -41,7 +41,7 @@ import { copyAmounts, totalWithFeeShort } from "@/lib/copy-math";
 import * as panta from "@/lib/panta";
 import { USDC_MINT, associatedTokenAddress, baseToUsdc, usdcToBase } from "@/lib/solana-constants";
 import type { StoredTrade } from "@/lib/data-store";
-import type { LandedTx } from "@/lib/chain";
+import { SendError, type LandedTx } from "@/lib/chain";
 import { checkInnerSystemOps, checkWalletAccount, innerSystemOps, type SimulationResult } from "@/lib/tx-guard";
 import { ED25519_L } from "@/lib/ed25519";
 import type { PendingOrder } from "@/lib/copy-store";
@@ -945,6 +945,9 @@ describe("B3-06: confirm race, atomic and idempotent confirm", () => {
       waitForConfirmation: async (sig: string, h: number | null, t: number) =>
         hide ? ("expired" as const) : chain.waitForConfirmation(sig, h, t),
       getLandedTransaction: async (sig: string) => (hide ? null : chain.getLandedTransaction(sig)),
+      // I-01: failing needs isBlockhashValid === false and no trace at all.
+      signatureSeen: async (sig: string) => (hide ? false : chain.signatureSeen(sig)),
+      isBlockhashValid: async () => !hide,
     };
     const d = deps({ state, chain: racy });
     const { b } = await quoteAndBuild(d, u);
@@ -1793,7 +1796,14 @@ describe("F-04: the shipped client re-checks by signature after a lost response,
     const chain = getSharedMockChain();
     const d = deps({
       state,
-      chain: { ...chain, send: async () => "x", waitForConfirmation: async () => "expired", getLandedTransaction: async () => null },
+      chain: {
+        ...chain,
+        send: async () => "x",
+        waitForConfirmation: async () => "expired",
+        getLandedTransaction: async () => null,
+        signatureSeen: async () => false,
+        isBlockhashValid: async () => false, // I-01: proven expired, not just past a height
+      },
     });
     const { b, sig, first } = await signedFirst(d, u);
     const w = wire(d, u);
@@ -1971,15 +1981,27 @@ describe("Addendum G: broadcast liveness, definite rejections, bounded re-sends,
     return { b, sig, raw, first: { orderId: b.orderId, signedTransaction } };
   };
   /** A chain whose sends are recorded and (unless `land`) dropped on the floor. */
-  const dropping = (o: { land: boolean; valid?: boolean; sends: Uint8Array[]; refuse?: (n: number) => string | null }) => ({
+  const dropping = (o: {
+    land: boolean;
+    valid?: boolean;
+    /** past lastValidBlockHeight with no status (the height hint) */
+    expire?: boolean;
+    sends: Uint8Array[];
+    refuse?: (n: number) => string | null;
+  }) => ({
     ...chain,
     send: async (raw: Uint8Array) => {
       o.sends.push(raw);
       const why = o.refuse?.(o.sends.length);
-      if (why) throw new Error(why);
+      // I-01: a structured preflight refusal (-32002 with a TransactionError).
+      if (why) throw new SendError("refused", -32002, why);
       return o.land ? chain.send(raw) : bs58.encode(VersionedTransaction.deserialize(raw).signatures[0]);
     },
     isBlockhashValid: async () => o.valid ?? true,
+    waitForConfirmation: async (s: string, h: number | null, t: number) => {
+      const r = await chain.waitForConfirmation(s, h, t);
+      return r === "pending" && o.expire ? ("expired" as const) : r;
+    },
   });
 
   describe("G-01: the real-chain adapter always reads the status, even with a zero timeout", () => {
@@ -2157,16 +2179,34 @@ describe("Addendum G: broadcast liveness, definite rejections, bounded re-sends,
       expect(o.sends.every((x) => Buffer.from(x).equals(raw))).toBe(true);
     });
 
-    it("refused every time: bounded, the order is failed (never re-sent later), and 'Nothing was spent' is true", async () => {
+    it("refused every time while the blockhash is valid: bounded, stays pending (SEND_UNCONFIRMED, never 'Nothing was spent'), failed only once provably dead", async () => {
       const u = await signedInUser();
       const state = createCopyMemoryState();
-      const o = { land: true, sends: [] as Uint8Array[], refuse: () => "Transaction simulation failed: Error processing Instruction 2" };
+      const o = {
+        land: true,
+        valid: true,
+        expire: false,
+        sends: [] as Uint8Array[],
+        refuse: () => "Transaction simulation failed: Error processing Instruction 2",
+      };
       const d = deps({ state, chain: dropping(o), resendDelayMs: 0 });
-      const { b, first } = await signedOf(d, u);
-      expect(await code(confirmOrder(d, post("/c", first, u), "copy"))).toBe("TX_REJECTED");
+      const { b, sig, first } = await signedOf(d, u);
+      const e = await confirmOrder(d, post("/c", first, u), "copy").catch((x) => x);
+      expect(e).toMatchObject({ code: "SEND_UNCONFIRMED", status: 502 });
+      expect(e.message).not.toMatch(/nothing was (spent|sent)/i);
+      expect(e.details).toMatchObject({ signature: sig, retryable: true });
       expect(o.sends.length).toBe(MAX_SENDS);
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+      // Sweep while still valid: no more sends (bounded), still pending.
+      expect(await sweepBroadcastOrders(later(state, { chain: dropping(o) }))).toMatchObject({ checked: 1, failed: 0 });
+      expect(o.sends.length).toBe(MAX_SENDS);
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+      // isBlockhashValid positively false + no trace: now it is failed, and only now "nothing was spent".
+      o.valid = false;
+      o.expire = true;
+      const r = await code(confirmOrder(d, post("/c", { orderId: b.orderId, signature: sig }, u), "copy"));
+      expect(r).toBe("QUOTE_EXPIRED");
       expect(state.orders.get(b.orderId)?.status).toBe("failed");
-      expect(await sweepBroadcastOrders(later(state, { chain: dropping(o) }))).toMatchObject({ checked: 0 });
       expect(o.sends.length).toBe(MAX_SENDS);
     });
 
@@ -2395,8 +2435,15 @@ describe("H-03: a 5xx before broadcast is resolved, never left polling a transac
     const broken = deps({ state, chain: { ...chain, waitForConfirmation: async () => Promise.reject(new Error("rpc")) } });
     expect(await code(bySig(broken))).toBe("NOT_BROADCAST");
     expect(state.orders.get(b.orderId)?.status).toBe("pending");
-    // Expired with no trace on chain: failed, "nothing was spent".
-    const expired = deps({ state, chain: { ...chain, waitForConfirmation: async () => "expired" as const } });
+    // I-01: past the height but isBlockhashValid still true (or erroring) is not proof: pending.
+    const hint = deps({ state, chain: { ...chain, waitForConfirmation: async () => "expired" as const } });
+    expect(await code(bySig(hint))).toBe("NOT_BROADCAST");
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    const bhErr = deps({ state, chain: { ...chain, isBlockhashValid: async () => Promise.reject(new Error("429")) } });
+    expect(await code(bySig(bhErr))).toBe("NOT_BROADCAST");
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    // isBlockhashValid positively false and no trace on chain: failed, "nothing was spent".
+    const expired = deps({ state, chain: { ...chain, isBlockhashValid: async () => false } });
     expect(await code(bySig(expired))).toBe("NOT_BROADCAST");
     expect(state.orders.get(b.orderId)?.status).toBe("failed");
     expect(state.copies.size).toBe(0);
@@ -2418,7 +2465,7 @@ describe("H-03: a 5xx before broadcast is resolved, never left polling a transac
     expect(state.copies.size).toBe(1);
 
     const { b: b2, first: first2 } = await signed(deps({ state }), u);
-    const exp = late({ ...chain, waitForConfirmation: async () => "expired" as const });
+    const exp = late({ ...chain, isBlockhashValid: async () => false });
     expect(await code(confirmOrder(exp, post("/c", first2, u), "copy"))).toBe("QUOTE_EXPIRED");
     expect(state.orders.get(b2.orderId)?.status).toBe("failed");
   });
@@ -2438,5 +2485,187 @@ describe("H-03: a 5xx before broadcast is resolved, never left polling a transac
     state.orders.get(b2.orderId)!.broadcastSignature = bs58.encode(Buffer.alloc(64, 1));
     await sweepBroadcastOrders(at(17));
     expect(state.orders.get(b2.orderId)?.status).toBe("pending");
+  });
+});
+
+describe("Addendum I/J: an order is failed only when provably dead (no trace AND isBlockhashValid === false)", () => {
+  const chain = getSharedMockChain();
+  const wire = (d: FlowDeps, u: User) => {
+    const bodies: Record<string, unknown>[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      try {
+        return Response.json(await confirmOrder(d, post("/api/copy/confirm", body, u), "copy"));
+      } catch (e) {
+        if (!(e instanceof AuthError)) throw e;
+        return authErrorResponse(e);
+      }
+    }) as typeof fetch;
+    const postFn = (body: unknown) => api<ConfirmStep>("POST", "/api/copy/confirm", body).then((x) => x.data);
+    return { postFn, bodies, restore: () => (globalThis.fetch = realFetch) };
+  };
+  const signed = async (d: FlowDeps, u: User) => {
+    const { b } = await quoteAndBuild(d, u);
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64")).signatures[0]);
+    return { b, sig, first: { orderId: b.orderId, signedTransaction } };
+  };
+
+  describe("I-01: send errors are classified by the JSON-RPC code, never by web3.js's 'Simulation failed'", () => {
+    const classify = async (error: unknown) => {
+      const { classifySendRpcError } = await import("@/lib/solana");
+      try {
+        classifySendRpcError(error);
+      } catch (e) {
+        return e as SendError;
+      }
+      throw new Error("did not throw");
+    };
+
+    it("only -32002 with a TransactionError and -32003 are refusals; everything else is unclear", async () => {
+      expect((await classify({ code: -32002, message: "Transaction simulation failed: Blockhash not found", data: { err: "BlockhashNotFound" } })).kind).toBe("refused");
+      expect((await classify({ code: -32002, message: "x", data: { err: { InstructionError: [2, { Custom: 6001 }] } } })).kind).toBe("refused");
+      expect((await classify({ code: -32003, message: "Transaction signature verification failure" })).kind).toBe("refused");
+      for (const e of [
+        { code: -32005, message: "Node is behind by 42 slots" },
+        { code: -32603, message: "Internal error: upstream request timed out" },
+        { code: -32429, message: "rate limit exceeded" },
+        { code: -32002, message: "Transaction simulation failed", data: {} }, // no TransactionError
+        { code: -32002, message: "already processed", data: { err: "AlreadyProcessed" } },
+        { code: -32099, message: "unknown" },
+        { message: "no code" },
+        null,
+      ]) {
+        const r = await classify(e);
+        expect(r).toBeInstanceOf(SendError);
+        expect(r.kind).toBe("unclear");
+      }
+    });
+
+    it("the real send (plain JSON-RPC over fetch): HTTP 429, a network error and -32005 are unclear; the RPC URL never appears", async () => {
+      const prev = process.env.SOLANA_RPC_URL;
+      const url = "https://rpc.example/?api-key=" + "k".repeat(24);
+      process.env.SOLANA_RPC_URL = url;
+      const { sendRawClassified } = await import("@/lib/solana");
+      const realFetch = globalThis.fetch;
+      const seen: unknown[] = [];
+      try {
+        for (const [respond, kind] of [
+          [() => new Response("slow down", { status: 429 }), "unclear"],
+          [() => Promise.reject(new TypeError("fetch failed")), "unclear"],
+          [() => Response.json({ jsonrpc: "2.0", id: 1, error: { code: -32005, message: "Node is behind" } }), "unclear"],
+          [() => Response.json({ jsonrpc: "2.0", id: 1, error: { code: -32002, message: "sim", data: { err: "BlockhashNotFound" } } }), "refused"],
+        ] as const) {
+          globalThis.fetch = (async (_u: string, init: RequestInit) => {
+            seen.push(JSON.parse(String(init.body)));
+            return respond();
+          }) as typeof fetch;
+          const e = (await sendRawClassified(new Uint8Array([1, 2, 3])).catch((x) => x)) as SendError;
+          expect(e).toBeInstanceOf(SendError);
+          expect(e.kind).toBe(kind);
+          expect(e.message).not.toContain("rpc.example");
+          expect(e.message).not.toContain("k".repeat(24));
+        }
+        globalThis.fetch = (async () => Response.json({ jsonrpc: "2.0", id: 1, result: "SIG" })) as typeof fetch;
+        expect(await sendRawClassified(new Uint8Array([1]))).toBe("SIG");
+        // Same send params as before: preflight on at `confirmed`, maxRetries 3.
+        expect(seen[0]).toMatchObject({ method: "sendTransaction", params: [expect.any(String), { encoding: "base64", preflightCommitment: "confirmed", maxRetries: 3 }] });
+      } finally {
+        globalThis.fetch = realFetch;
+        if (prev === undefined) delete process.env.SOLANA_RPC_URL;
+        else process.env.SOLANA_RPC_URL = prev;
+      }
+    });
+
+    it("the auditor's PoF: a relayed send answered with an RPC error, plus an isBlockhashValid error -> not failed, recorded when it lands", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      let bhCalls = 0;
+      const d = deps({
+        state,
+        resendDelayMs: 0,
+        chain: {
+          ...chain,
+          // Even if a proxy's answer were (wrongly) a refusal after relaying it:
+          send: async (raw: Uint8Array) => {
+            await chain.send(raw).catch(() => undefined);
+            throw new SendError("refused", -32002, "preflight: BlockhashNotFound");
+          },
+          waitForConfirmation: async () => "pending" as const,
+          isBlockhashValid: async () => (bhCalls++, Promise.reject(new Error("fetch failed"))),
+        },
+      });
+      const { b, sig, first } = await signed(d, u);
+      const e = await confirmOrder(d, post("/c", first, u), "copy").catch((x) => x);
+      expect(e).toMatchObject({ code: "SEND_UNCONFIRMED", details: { signature: sig, retryable: true } });
+      expect(e.message).not.toMatch(/nothing was (spent|sent)/i);
+      expect(bhCalls).toBeGreaterThan(0);
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+      // The tx is on chain: the next lookup (client poll or sweep) records it.
+      const r = await confirmOrder(deps({ state }), post("/c", { orderId: b.orderId, signature: sig }, u), "copy");
+      expect(r.status).toBe("confirmed");
+      expect(state.copies.size).toBe(1);
+    });
+
+    it("an unclear send error (-32005 node behind) is never retried blind or failed: it goes to verification", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const sends: Uint8Array[] = [];
+      const d = deps({
+        state,
+        chain: {
+          ...chain,
+          send: async (raw: Uint8Array) => {
+            sends.push(raw);
+            throw new SendError("unclear", -32005, "rpc -32005: Node is behind");
+          },
+          isBlockhashValid: async () => false,
+        },
+      });
+      const { b, first } = await signed(d, u);
+      expect((await confirmOrder(d, post("/c", first, u), "copy")).status).toBe("pending");
+      expect(sends.length).toBe(1);
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    });
+
+    it("the shipped client keeps checking by signature after SEND_UNCONFIRMED, and records it when it lands", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      let refusals = 0;
+      const d = deps({
+        state,
+        resendDelayMs: 0,
+        chain: {
+          ...chain,
+          send: async (raw: Uint8Array) => {
+            if (refusals++ < MAX_SENDS) throw new SendError("refused", -32002, "preflight: BlockhashNotFound");
+            return chain.send(raw);
+          },
+        },
+      });
+      const { b, sig, first } = await signed(d, u);
+      const w = wire(d, u);
+      try {
+        // The first post is refused MAX_SENDS times; the order stays pending, the client polls by
+        // signature. Land it out of band (as a relay would), and the poll records it.
+        let polls = 0;
+        const r = await pollConfirm(
+          w.postFn,
+          b.orderId,
+          first,
+          async () => {
+            if (++polls === 2) await chain.send(Buffer.from(first.signedTransaction, "base64"));
+          },
+          sig,
+        );
+        expect(r).toMatchObject({ status: "confirmed", signature: sig });
+        expect(w.bodies[1]).toEqual({ orderId: b.orderId, signature: sig });
+        expect(state.copies.size).toBe(1);
+      } finally {
+        w.restore();
+      }
+    });
   });
 });

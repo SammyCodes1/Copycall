@@ -19,12 +19,32 @@ export type LandedTx = {
   innerPrograms?: string[] | null;
   /** Inner System instructions (F-01). null if unknown. */
   innerSystemOps?: InnerSystemOp[] | null;
+  /** J-07: the fee payer's lamports right after this tx (meta.postBalances[0]). null if unknown. */
+  payerPostLamports?: number | null;
 };
 
 export type ConfirmationState = "confirmed" | "failed" | "pending" | "expired";
 
+/**
+ * I-01: a broadcast that didn't return a signature. `refused` only when the RPC's structured
+ * JSON-RPC error proves the node rejected it before forwarding (-32002 preflight failure with a
+ * TransactionError, -32003 signature verification). Everything else (node behind -32005,
+ * internal -32603, rate limit, HTTP 429/5xx, timeouts, unknown codes) is `unclear`: the tx may
+ * have been relayed. `detail` never contains the RPC URL.
+ */
+export class SendError extends Error {
+  constructor(
+    readonly kind: "refused" | "unclear",
+    readonly rpcCode: number | null,
+    detail: string,
+  ) {
+    super(detail);
+    this.name = "SendError";
+  }
+}
+
 export interface Chain extends ChainReader {
-  /** Broadcast signed bytes on our RPC. Returns the signature. */
+  /** Broadcast signed bytes on our RPC. Returns the signature. Throws SendError (I-01). */
   send(raw: Uint8Array): Promise<string>;
   /**
    * Wait (bounded) for `confirmed` commitment. Always reads the status at least once (G-01),
@@ -39,6 +59,8 @@ export interface Chain extends ChainReader {
   ): Promise<ConfirmationState>;
   /** G-03: whether a blockhash can still land a transaction (bounded re-sends only while true). */
   isBlockhashValid(blockhash: string): Promise<boolean>;
+  /** I-01: any on-chain trace of this signature (any commitment, incl. processed, with history). */
+  signatureSeen(signature: string): Promise<boolean>;
   /** The transaction as it landed on chain (confirmed commitment), or null if not found yet. */
   getLandedTransaction(signature: string): Promise<LandedTx | null>;
   /** F-01: the wallet account's current owner, executable flag and data length (null = no account). */

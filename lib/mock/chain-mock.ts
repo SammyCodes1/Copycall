@@ -15,7 +15,7 @@ import { randomBytes } from "node:crypto";
 import { PublicKey, TransactionMessage, VersionedMessage, VersionedTransaction } from "@solana/web3.js";
 import marketsJson from "@/fixtures/markets.json";
 import positionsJson from "@/fixtures/positions.json";
-import type { Chain, LandedTx } from "../chain";
+import { SendError, type Chain, type LandedTx } from "../chain";
 import { payerUsdcOutFromMeta, type TokenBalanceRow } from "../landed";
 import type { PantaPosition, Side } from "../schemas";
 import {
@@ -282,7 +282,7 @@ export function createMockChain(): MockChain {
     });
 
   function land(message: VersionedMessage, signature: string, simulated: boolean) {
-    if (state.landed.has(signature)) throw new Error("Transaction already processed");
+    if (state.landed.has(signature)) throw new SendError("unclear", -32002, "already processed");
     const keys = message.staticAccountKeys.map((k) => k.toBase58());
     const preTokenBalances = tokenRows(state, keys);
     const next = cloneLedger(state);
@@ -311,6 +311,7 @@ export function createMockChain(): MockChain {
       payerUsdcOutBase,
       innerPrograms: inner,
       innerSystemOps: sysOps,
+      payerPostLamports: state.lamports.has(keys[0]) ? Number(state.lamports.get(keys[0])) : null,
     });
     return signature;
   }
@@ -375,7 +376,7 @@ export function createMockChain(): MockChain {
       const n = tx.message.header.numRequiredSignatures;
       for (let i = 0; i < n; i++) {
         const ok = nacl.sign.detached.verify(msg, tx.signatures[i], tx.message.staticAccountKeys[i].toBytes());
-        if (!ok) throw new Error("Transaction signature verification failure");
+        if (!ok) throw new SendError("refused", -32003, "signature verification failed");
       }
       return land(tx.message, bs58.encode(tx.signatures[0]), false);
     },
@@ -390,6 +391,10 @@ export function createMockChain(): MockChain {
       return true;
     },
 
+    async signatureSeen(signature) {
+      return state.landed.has(signature);
+    },
+
     async getLandedTransaction(signature) {
       const t = state.landed.get(signature);
       return t
@@ -401,6 +406,7 @@ export function createMockChain(): MockChain {
             payerUsdcOutBase: t.payerUsdcOutBase ?? null,
             innerPrograms: t.innerPrograms ?? null,
             innerSystemOps: t.innerSystemOps ?? null,
+            payerPostLamports: t.payerPostLamports ?? null,
           }
         : null;
     },

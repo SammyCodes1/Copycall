@@ -112,7 +112,10 @@ export async function pollConfirm(
     } catch (err) {
       if (!(err instanceof FlowError)) throw err;
       const sig = err.signature ?? knownSignature;
-      if (err.code === "VERIFY_UNAVAILABLE" && sig) return { status: "pending", signature: sig };
+      // I-01: SEND_UNCONFIRMED = the server couldn't get it sent but can't prove it won't land; it
+      // keeps re-sending and checking, so we keep checking by signature (no re-post).
+      if ((err.code === "VERIFY_UNAVAILABLE" || err.code === "SEND_UNCONFIRMED") && sig)
+        return { status: "pending", signature: sig };
       if ((err.code === "NETWORK" || err.httpStatus >= 500) && knownSignature)
         // H-03: the server may have failed before broadcasting: re-post the signed bytes (bounded).
         return { status: "pending", signature: knownSignature, resend: canResend && resends < RESEND_TRIES };
