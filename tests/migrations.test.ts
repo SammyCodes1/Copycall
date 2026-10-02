@@ -412,10 +412,42 @@ describe("supabase migrations", () => {
       expect(rs.filter((r) => r !== "ok").every((r) => r === "already_confirmed" || r === "not_pending")).toBe(true);
       expect((await db.query(`select 1 from public.copies where order_id = $1`, [f])).rows).toHaveLength(1);
       expect(await revive(f, "sigF3")).toBe("not_pending");
+
+      // B3-07: report retries are claimed atomically, with backoff, a cap, and a stop code.
+      const due = (gap: number, max = 5) =>
+        db
+          .query<{ kind: string; order_id: string; signature: string; wallet: string; attempts: number }>(
+            `select * from public.claim_report_retries(50, $1, $2, 86400)`,
+            [max, gap],
+          )
+          .then((r) => r.rows.filter((x) => x.wallet === "copyW"));
+      const first = await due(0);
+      expect(first.map((x) => x.signature).sort()).toEqual(["sigA", "sigC", "sigF"]);
+      expect(first.every((x) => x.attempts === 1)).toBe(true);
+      expect(await due(3600)).toEqual([]); // last attempt was just now: backoff
+      expect((await due(0)).every((x) => x.attempts === 2)).toBe(true);
+      await db.query(`select public.record_report_failure($1, 'TX_FEE_MISMATCH', true, 5)`, [a]);
+      await db.query(`update public.claims set reported_at = now() where signature = 'sigC'`);
+      expect((await due(0)).map((x) => x.signature)).toEqual(["sigF"]); // stopped + reported are gone
+      expect((await due(0, 4)).map((x) => x.signature)).toEqual(["sigF"]); // attempt 4
+      expect(await due(0, 4)).toEqual([]); // cap reached
+      const errRow = (await db.query<{ report_error: string }>(`select report_error from public.copies where order_id = $1`, [a])).rows[0];
+      expect(errRow.report_error).toBe("TX_FEE_MISMATCH");
+      await expect(db.query(`update public.copies set report_error = 'bad code!' where order_id = $1`, [a])).rejects.toThrow(/check/);
       await expect(
         db.query(`update public.pending_orders set message_hash = 'nothex' where id = $1`, [b]),
       ).rejects.toThrow(/check/);
     });
+  });
+  it("report-retry functions are service_role only", async () => {
+    for (const role of ["anon", "authenticated"]) {
+      await expect(asRole(role, () => db.query(`select * from public.claim_report_retries(1, 1, 1, 1)`))).rejects.toThrow(
+        /permission denied/,
+      );
+      await expect(
+        asRole(role, () => db.query(`select public.record_report_failure(gen_random_uuid(), 'X', true, 1)`)),
+      ).rejects.toThrow(/permission denied/);
+    }
   });
   it("batch 2 audit functions are service_role only", async () => {
     const calls = [

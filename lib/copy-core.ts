@@ -61,6 +61,7 @@ import {
   type FeeModel,
 } from "./copy-math";
 import { FeeModelError, quoteWithinStake, type PinnedFeeModel, type WithinStake } from "./fee-quote";
+import { reportOnce } from "./report-retry";
 import { safeTitle } from "./text";
 import type { TradeSide } from "./trades";
 import {
@@ -113,6 +114,8 @@ export type FlowDeps = UserDeps & {
   nowMs?: () => number;
   confirmTimeoutMs?: number;
   log?: (m: string) => void;
+  /** Operator alert (TX_FEE_MISMATCH and friends). Default: console.error "[ALERT] …". */
+  alert?: (m: string) => void;
 };
 
 const nowSec = (d: FlowDeps) => Math.floor((d.nowMs?.() ?? Date.now()) / 1000);
@@ -618,7 +621,9 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     throw new AuthError(404, "ORDER_NOT_FOUND", "We couldn't find this order. Start again.");
   }
   if (order.status === "confirmed") {
-    return { status: "confirmed", signature: order.signature!, reported: true, simulated: d.mock, kind };
+    // B3-07: the real report status, not an unconditional true.
+    const reported = await d.copy.isReported(order.id);
+    return { status: "confirmed", signature: order.signature!, reported, simulated: d.mock, kind };
   }
   // B3-06: a failed order (e.g. marked expired just as it landed) may be re-verified on chain
   // by signature. Every landed-transaction check below runs again before anything is recorded.
@@ -734,25 +739,23 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   const result = await d.copy.completeOrder(order.id, session.uid, signature, { allowFailed: revive });
   if (result === "already_confirmed") {
     // A concurrent confirm of the same signature recorded it first: idempotent, no second record or report.
-    return { status: "confirmed", signature, reported: false, simulated, kind };
+    return { status: "confirmed", signature, reported: await d.copy.isReported(order.id), simulated, kind };
   }
   if (result === "signature_used") throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
   if (result === "not_pending") throw new AuthError(409, "ORDER_NOT_PENDING", "This order was already handled");
 
-  // Recorded. Now attribute it with Panta (idempotent per signature).
-  let reported = false;
-  try {
-    await d.panta.reportTrade({
+  // Recorded. Now attribute it with Panta (idempotent per signature). A failure is
+  // retried by the alerts cron (lib/report-retry.ts, B3-07).
+  const reported =
+    (await reportOnce(d, {
+      kind,
+      orderId: order.id,
       signature,
       wallet: session.w,
       marketId: order.marketId,
-      ...(order.quoteId ? { quoteId: order.quoteId } : {}),
-    });
-    await d.copy.markReported(order.id);
-    reported = true;
-  } catch (err) {
-    d.log?.(`${kind} report failed for ${signature.slice(0, 8)}…: ${err instanceof PantaError ? err.code : "error"}`);
-  }
+      quoteId: order.quoteId,
+      attempts: 1,
+    })) === "reported";
   await d.copy.cacheDelete(`positions:${session.w}`);
   return { status: "confirmed", signature, reported, simulated, kind };
 }

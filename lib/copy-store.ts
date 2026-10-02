@@ -59,6 +59,19 @@ export type RecordedClaim = {
   createdAt: number;
 };
 
+/** An unreported copy/claim the cron should report to Panta again (B3-07). */
+export type ReportJob = {
+  kind: TxKind;
+  orderId: string;
+  signature: string;
+  wallet: string;
+  marketId: string;
+  quoteId: string | null;
+  attempts: number; // including this one
+};
+
+export type ReportRetryPolicy = { limit: number; maxAttempts: number; baseGapSec: number; maxAgeSec: number };
+
 export interface CopyStore {
   cacheGet<T>(key: string, nowSec: number): Promise<T | null>;
   cachePut(key: string, value: unknown, expiresAtSec: number): Promise<void>;
@@ -81,8 +94,14 @@ export interface CopyStore {
     opts?: { allowFailed?: boolean },
   ): Promise<CompleteResult>;
   failOrder(orderId: string): Promise<void>;
-  /** After POST /trades/: copies.status = reported (claims: reported_at). */
+  /** After POST /trades/: copies.status = reported, reported_at = now (claims: reported_at). */
   markReported(orderId: string): Promise<void>;
+  /** Has the copy/claim recorded for this order been reported to Panta? */
+  isReported(orderId: string): Promise<boolean>;
+  /** A failed report attempt (code is a Panta error code). stop = never retry. */
+  recordReportFailure(orderId: string, code: string, stop: boolean, maxAttempts: number): Promise<void>;
+  /** Claim due report retries (bumps their attempt counters atomically). */
+  claimReportRetries(p: ReportRetryPolicy): Promise<ReportJob[]>;
 
   listCopies(userId: string, limit: number): Promise<RecordedCopy[]>;
   listClaims(userId: string, limit: number): Promise<RecordedClaim[]>;

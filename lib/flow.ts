@@ -13,6 +13,7 @@ import { MOCK_PROGRAM_ID, getSharedMockChain } from "./mock/chain-mock";
 import { getSharedMemoryCopyStore } from "./mock/copy-store-memory";
 import * as panta from "./panta";
 import { PubkeySchema } from "./schemas";
+import type { ReportDeps } from "./report-retry";
 import { rpcChain } from "./solana";
 
 /** PANTA_PROGRAM_IDS as a set. Real mode fails closed if it's missing or malformed. */
@@ -62,5 +63,16 @@ export function getFlowDeps(): FlowDeps {
     })(),
     mock,
     log: (m) => console.info(`[copy] ${m}`),
+    alert: (m) => console.error(`[ALERT] ${m}`),
+  };
+}
+
+/** Deps for the report-retry cron step (B3-07): only the store and Panta's report endpoint. */
+export function getReportDeps(): ReportDeps {
+  return {
+    copy: isMockMode() ? getSharedMemoryCopyStore() : supabaseCopyStore,
+    panta: { reportTrade: panta.reportTrade },
+    log: (m) => console.info(`[report] ${m}`),
+    alert: (m) => console.error(`[ALERT] ${m}`),
   };
 }

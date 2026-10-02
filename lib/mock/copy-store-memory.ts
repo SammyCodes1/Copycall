@@ -1,13 +1,28 @@
 /** In-memory CopyStore (MOCK_PANTA=true and tests only). Same contract as the Supabase store. */
 import { randomUUID } from "node:crypto";
 import { assertBootSafe, isVercelProduction } from "../boot";
-import type { CopyStore, PendingOrder, RecordedClaim, RecordedCopy } from "../copy-store";
+import type { CopyStore, PendingOrder, RecordedClaim, RecordedCopy, ReportJob } from "../copy-store";
+
+/** Overridable clock (tests move time forward to exercise backoff). */
+let clockMs: () => number = () => Date.now();
+export function setMemoryCopyClock(fn: (() => number) | null) {
+  clockMs = fn ?? (() => Date.now());
+}
+const nowSec = () => Math.floor(clockMs() / 1000);
+
+/** Report bookkeeping, like the copies/claims report_* columns (migration 0010). */
+type ReportCols = {
+  reportedAt?: number | null;
+  reportAttempts?: number;
+  reportLastAttemptAt?: number | null;
+  reportError?: string | null;
+};
 
 export type CopyMemoryState = {
   cache: Map<string, { value: unknown; expiresAt: number }>;
   orders: Map<string, PendingOrder>;
-  copies: Map<string, RecordedCopy & { userId: string; orderId: string }>;
-  claims: Map<string, RecordedClaim & { userId: string; orderId: string }>;
+  copies: Map<string, RecordedCopy & { userId: string; orderId: string } & ReportCols>;
+  claims: Map<string, RecordedClaim & { userId: string; orderId: string } & ReportCols>;
 };
 
 export function createCopyMemoryState(): CopyMemoryState {
@@ -58,7 +73,7 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
       if (used(signature)) return "signature_used";
       o.status = "confirmed";
       o.signature = signature;
-      const createdAt = Math.floor(Date.now() / 1000);
+      const createdAt = nowSec();
       if (o.kind === "copy") {
         const id = randomUUID();
         s.copies.set(id, {
@@ -95,7 +110,63 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
       if (o && o.status === "pending") o.status = "failed";
     },
     async markReported(orderId) {
-      for (const c of s.copies.values()) if (c.orderId === orderId) c.status = "reported";
+      const at = nowSec();
+      for (const c of s.copies.values())
+        if (c.orderId === orderId) {
+          c.status = "reported";
+          c.reportedAt = at;
+        }
+      for (const c of s.claims.values()) if (c.orderId === orderId) c.reportedAt = at;
+    },
+    async isReported(orderId) {
+      return [...s.copies.values(), ...s.claims.values()].some((r) => r.orderId === orderId && !!r.reportedAt);
+    },
+    async recordReportFailure(orderId, code, stop, maxAttempts) {
+      for (const r of [...s.copies.values(), ...s.claims.values()]) {
+        if (r.orderId !== orderId || r.reportedAt) continue;
+        r.reportError = /^[A-Z_]{1,40}$/.test(code) ? code : "ERROR";
+        r.reportAttempts = stop ? Math.max(r.reportAttempts ?? 0, maxAttempts) : Math.max(r.reportAttempts ?? 0, 1);
+        r.reportLastAttemptAt = nowSec();
+      }
+    },
+    async claimReportRetries(p) {
+      const now = nowSec();
+      const lim = Math.min(Math.max(p.limit, 0), 100);
+      const due = (r: ReportCols & { createdAt: number }) => {
+        const n = r.reportAttempts ?? 0;
+        return (
+          !r.reportedAt &&
+          n < p.maxAttempts &&
+          r.createdAt > now - p.maxAgeSec &&
+          (r.reportLastAttemptAt == null || r.reportLastAttemptAt <= now - p.baseGapSec * 2 ** Math.max(n - 1, 0))
+        );
+      };
+      const jobs: ReportJob[] = [];
+      type Row = ReportCols & { createdAt: number; orderId: string; signature: string; marketId: string; status?: string };
+      const take = (rows: Row[], kind: ReportJob["kind"]) => {
+        const picked = rows
+          .filter((r) => due(r) && (kind === "claim" || r.status === "confirmed"))
+          .sort((a, b) => a.createdAt - b.createdAt)
+          .slice(0, lim);
+        for (const r of picked) {
+          const o = s.orders.get(r.orderId);
+          if (!o) continue;
+          r.reportAttempts = (r.reportAttempts ?? 0) + 1;
+          r.reportLastAttemptAt = now;
+          jobs.push({
+            kind,
+            orderId: r.orderId,
+            signature: r.signature,
+            wallet: o.wallet,
+            marketId: r.marketId,
+            quoteId: o.quoteId,
+            attempts: r.reportAttempts,
+          });
+        }
+      };
+      take([...s.copies.values()], "copy");
+      take([...s.claims.values()], "claim");
+      return jobs;
     },
     async listCopies(userId, limit) {
       return [...s.copies.values()]

@@ -3,7 +3,7 @@ import "server-only";
  * Supabase-backed CopyStore (service role; migration 0006). Errors are
  * rethrown as generic messages so no SQL or row data leaks.
  */
-import type { CompleteResult, CopyStore, PendingOrder, RecordedClaim, RecordedCopy } from "./copy-store";
+import type { CompleteResult, CopyStore, PendingOrder, RecordedClaim, RecordedCopy, ReportJob } from "./copy-store";
 import { getDb } from "./db";
 import type { TradeSide } from "./trades";
 
@@ -149,10 +149,48 @@ export const supabaseCopyStore: CopyStore = {
   async markReported(orderId) {
     const db = getDb();
     const [a, b] = await Promise.all([
-      db.from("copies").update({ status: "reported" }).eq("order_id", orderId),
+      db.from("copies").update({ status: "reported", reported_at: new Date().toISOString() }).eq("order_id", orderId),
       db.from("claims").update({ reported_at: new Date().toISOString() }).eq("order_id", orderId),
     ]);
     if (a.error || b.error) fail("mark reported");
+  },
+  async isReported(orderId) {
+    const db = getDb();
+    const [a, b] = await Promise.all([
+      db.from("copies").select("reported_at").eq("order_id", orderId).maybeSingle(),
+      db.from("claims").select("reported_at").eq("order_id", orderId).maybeSingle(),
+    ]);
+    if (a.error || b.error) fail("report status");
+    return Boolean(a.data?.reported_at || b.data?.reported_at);
+  },
+  async recordReportFailure(orderId, code, stop, maxAttempts) {
+    const { error } = await getDb().rpc("record_report_failure", {
+      p_order_id: orderId,
+      p_code: /^[A-Z_]{1,40}$/.test(code) ? code : "ERROR",
+      p_stop: stop,
+      p_max_attempts: maxAttempts,
+    });
+    if (error) fail("record report failure");
+  },
+  async claimReportRetries(p) {
+    const { data, error } = await getDb().rpc("claim_report_retries", {
+      p_limit: p.limit,
+      p_max_attempts: p.maxAttempts,
+      p_base_gap_sec: p.baseGapSec,
+      p_max_age_sec: p.maxAgeSec,
+    });
+    if (error) fail("claim report retries");
+    return ((data ?? []) as Record<string, unknown>[]).map(
+      (r): ReportJob => ({
+        kind: r.kind as ReportJob["kind"],
+        orderId: String(r.order_id),
+        signature: String(r.signature),
+        wallet: String(r.wallet),
+        marketId: String(r.market_id),
+        quoteId: r.quote_id === null || r.quote_id === undefined ? null : String(r.quote_id),
+        attempts: Number(r.attempts),
+      }),
+    );
   },
   async listCopies(userId, limit) {
     const { data, error } = await getDb()

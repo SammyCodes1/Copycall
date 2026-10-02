@@ -169,6 +169,10 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    locks the order row and UNIQUE order/signature columns allow one record per order, so concurrent or repeated
    confirms record once. Before calling a transaction expired, the server checks once more whether it landed;
    an order failed that way can be re-verified by `{orderId, signature}` (every on-chain check runs again).
+   **Report retries (B3-07):** a failed `POST /trades/` is retried by the alerts cron (`lib/report-retry.ts`):
+   up to 5 attempts in total, at least 110 s × 2^(attempts − 1) apart, for 24 h. `TX_FEE_MISMATCH` and
+   `TX_MISMATCH` log an `[ALERT]` and stop (Panta's own check disagrees with ours); `TX_FAILED` stops too.
+   Confirm responses carry the real `reported` flag.
 4. `/positions` (`GET /api/positions`, 30 s cache) lists holdings from Panta's index; a resolved win shows
    Claim (`POST /api/claim/build` `{marketId}` then `/api/claim/confirm`), with no USDC allowed to leave. The
    claim must list the wallet's own USDC ATA, and both the simulation and the landed transaction must show it

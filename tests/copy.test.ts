@@ -6,7 +6,7 @@
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Keypair, TransactionInstruction, TransactionMessage, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { GET as quoteRoute } from "@/app/api/copy/[tradeId]/quote/route";
 import { POST as buildRoute } from "@/app/api/copy/[tradeId]/build/route";
@@ -16,7 +16,14 @@ import { AuthError } from "@/lib/auth-core";
 import { buildClaimTx, buildCopy, confirmOrder, myPositions, quoteCopy, type FlowDeps } from "@/lib/copy-core";
 import { ensureMockData, getDataStore, getUserDeps } from "@/lib/data";
 import { MOCK_PROGRAM_ID, getSharedMockChain } from "@/lib/mock/chain-mock";
-import { createCopyMemoryState, createMemoryCopyStore, type CopyMemoryState } from "@/lib/mock/copy-store-memory";
+import {
+  createCopyMemoryState,
+  createMemoryCopyStore,
+  setMemoryCopyClock,
+  type CopyMemoryState,
+} from "@/lib/mock/copy-store-memory";
+import { PantaError } from "@/lib/panta-error";
+import { REPORT_RETRY, runReportRetries } from "@/lib/report-retry";
 import { copyAmounts, totalWithFeeShort } from "@/lib/copy-math";
 import * as panta from "@/lib/panta";
 import { USDC_MINT, associatedTokenAddress, baseToUsdc, usdcToBase } from "@/lib/solana-constants";
@@ -961,5 +968,122 @@ describe("B3-06: confirm race, atomic and idempotent confirm", () => {
     expect([x, y].sort()).toEqual(["not_pending", "ok"]);
     expect(await d.copy.completeOrder(b.orderId, u.userId, "sigZ", { allowFailed: true })).toBe("not_pending");
     expect(state.copies.size).toBe(1);
+  });
+});
+
+describe("B3-07: Panta reports are retried, bounded, and reported honestly", () => {
+  const failing = (codeFn: () => string | null, calls: string[]) => ({
+    ...deps().panta,
+    reportTrade: async (req: Parameters<FlowDeps["panta"]["reportTrade"]>[0]) => {
+      calls.push(req.signature);
+      const c = codeFn();
+      if (c) throw new PantaError(c === "RATE_LIMITED" ? 429 : 400, c, "nope");
+      return panta.reportTrade(req);
+    },
+  });
+  const t0 = Date.now();
+  const at = (sec: number) => setMemoryCopyClock(() => t0 + sec * 1000);
+  afterEach(() => setMemoryCopyClock(null));
+
+  async function confirmedCopy(d: FlowDeps, u: User) {
+    const { b } = await quoteAndBuild(d, u);
+    const r = await confirmOrder(
+      d,
+      post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u),
+      "copy",
+    );
+    return { b, r };
+  }
+
+  it("a failed report says reported:false (also on re-confirm) and the cron retries it with backoff", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const calls: string[] = [];
+    let fail: string | null = "RATE_LIMITED";
+    const d = deps({ state, panta: failing(() => fail, calls) });
+    at(0);
+    const { b, r } = await confirmedCopy(d, u);
+    expect(r).toMatchObject({ status: "confirmed", reported: false });
+    expect(state.copies.size).toBe(1); // recorded regardless of Panta
+    // Re-confirm reports the real status (it used to say true unconditionally).
+    expect(await confirmOrder(d, post("/c", { orderId: b.orderId, signature: r.signature }, u), "copy")).toMatchObject({
+      reported: false,
+    });
+    const rd = { copy: d.copy, panta: d.panta };
+    expect((await runReportRetries(rd)).claimed).toBe(0); // backoff: not due yet
+    at(REPORT_RETRY.baseGapSec);
+    expect(await runReportRetries(rd)).toMatchObject({ claimed: 1, retry: 1 }); // attempt 2 fails
+    at(REPORT_RETRY.baseGapSec + REPORT_RETRY.baseGapSec); // 2nd gap is doubled: not yet
+    expect((await runReportRetries(rd)).claimed).toBe(0);
+    at(REPORT_RETRY.baseGapSec * 3);
+    fail = null;
+    expect(await runReportRetries(rd)).toMatchObject({ claimed: 1, reported: 1 });
+    expect([...state.copies.values()][0].status).toBe("reported");
+    expect(await confirmOrder(d, post("/c", { orderId: b.orderId, signature: r.signature }, u), "copy")).toMatchObject({
+      reported: true,
+    });
+    at(REPORT_RETRY.baseGapSec * 100);
+    expect((await runReportRetries(rd)).claimed).toBe(0); // reported rows are never retried
+    expect(calls).toHaveLength(3); // confirm, retry 1 (failed), retry 2 (reported)
+  });
+
+  it("stops after maxAttempts and after maxAgeSec", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const calls: string[] = [];
+    const d = deps({ state, panta: failing(() => "INTERNAL_ERROR", calls) });
+    at(0);
+    await confirmedCopy(d, u);
+    const rd = { copy: d.copy, panta: d.panta };
+    for (let i = 1; i <= 20; i++) {
+      at(REPORT_RETRY.baseGapSec * 2 ** i);
+      await runReportRetries(rd);
+    }
+    expect(calls).toHaveLength(REPORT_RETRY.maxAttempts);
+    expect([...state.copies.values()][0]).toMatchObject({ reportAttempts: REPORT_RETRY.maxAttempts, reportError: "INTERNAL_ERROR" });
+
+    // A fresh failure older than maxAgeSec is not retried either.
+    const u2 = await signedInUser();
+    const s2 = createCopyMemoryState();
+    const calls2: string[] = [];
+    const d2 = deps({ state: s2, panta: failing(() => "TX_NOT_FOUND", calls2) });
+    at(0);
+    await confirmedCopy(d2, u2);
+    at(REPORT_RETRY.maxAgeSec + 1);
+    expect((await runReportRetries({ copy: d2.copy, panta: d2.panta })).claimed).toBe(0);
+    expect(calls2).toHaveLength(1);
+  });
+
+  it("TX_FEE_MISMATCH raises an alert and is never retried", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const calls: string[] = [];
+    const alerts: string[] = [];
+    const d = deps({ state, panta: failing(() => "TX_FEE_MISMATCH", calls), alert: (m: string) => alerts.push(m) });
+    at(0);
+    const { r } = await confirmedCopy(d, u);
+    expect(r).toMatchObject({ reported: false });
+    expect(alerts.join("\n")).toMatch(/TX_FEE_MISMATCH/);
+    expect(alerts.join("\n")).not.toContain(r.signature); // shortened, not the full signature
+    at(REPORT_RETRY.baseGapSec * 1000);
+    expect((await runReportRetries({ copy: d.copy, panta: d.panta })).claimed).toBe(0);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("claims are retried too", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const calls: string[] = [];
+    let fail: string | null = "RATE_LIMITED";
+    const d = deps({ state, panta: failing(() => fail, calls) });
+    at(0);
+    const win = (await myPositions(d, get("/p", u))).positions.find((p) => p.status === "claimable")!;
+    const b = await buildClaimTx(d, post("/cb", { marketId: win.marketId }, u));
+    const r = await confirmOrder(d, post("/cc", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u), "claim");
+    expect(r).toMatchObject({ status: "confirmed", reported: false });
+    fail = null;
+    at(REPORT_RETRY.baseGapSec);
+    expect(await runReportRetries({ copy: d.copy, panta: d.panta })).toMatchObject({ claimed: 1, reported: 1 });
+    expect(await d.copy.isReported(b.orderId)).toBe(true);
   });
 });
