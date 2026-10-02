@@ -1000,7 +1000,7 @@ describe("B3-06: confirm race, atomic and idempotent confirm", () => {
       ),
     );
     expect(results.filter((r) => r === "OK").length).toBeGreaterThanOrEqual(1);
-    for (const r of results) expect(["OK", "ORDER_NOT_PENDING", "SIGNATURE_USED", "QUOTE_EXPIRED"]).toContain(r);
+    for (const r of results) expect(["OK", "ORDER_NOT_PENDING", "SIGNATURE_USED", "QUOTE_EXPIRED", "NOT_BROADCAST"]).toContain(r);
     expect(state.copies.size).toBe(1);
     expect([...state.copies.values()][0].signature).toBe(sig);
   });
@@ -1736,16 +1736,19 @@ describe("F-04: the shipped client re-checks by signature after a lost response,
     return { b, sig, first: { orderId: b.orderId, signedTransaction } };
   };
 
-  it("a lost response after broadcast: the client checks by the signature it already knows, and it's recorded", async () => {
+  it("a lost response after broadcast: the client re-posts the same signed bytes once (a lookup), and it's recorded", async () => {
     const u = await signedInUser();
     const state = createCopyMemoryState();
-    const d = deps({ state });
+    const chain = getSharedMockChain();
+    const sends: Uint8Array[] = [];
+    const d = deps({ state, chain: { ...chain, send: async (r: Uint8Array) => (sends.push(r), chain.send(r)) } });
     const { b, sig, first } = await signedFirst(d, u);
     const w = wire(d, u, { dropFirstResponse: true });
     try {
       const r = await pollConfirm(w.postFn, b.orderId, first, async () => {}, sig);
       expect(r).toMatchObject({ status: "confirmed", signature: sig });
-      expect(w.bodies[1]).toEqual({ orderId: b.orderId, signature: sig });
+      expect(w.bodies[1]).toEqual(first); // H-03: the server dedupes; it was already broadcast
+      expect(sends.length).toBe(1);
       expect(state.copies.size).toBe(1);
     } finally {
       w.restore();
@@ -2285,5 +2288,152 @@ describe("G-05: in real mode a claim build fails closed without an on-chain posi
     expect(await code(buildClaimTx(deps({ chain: lying, mock: false }), post("/cb", { marketId: win.marketId }, u)))).toBe(
       "TX_REJECTED",
     );
+  });
+});
+
+describe("H-03: a 5xx before broadcast is resolved, never left polling a transaction nobody sent", () => {
+  const chain = getSharedMockChain();
+  const wire = (d: FlowDeps, u: User) => {
+    const bodies: Record<string, unknown>[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      try {
+        return Response.json(await confirmOrder(d, post("/api/copy/confirm", body, u), "copy"));
+      } catch (e) {
+        if (!(e instanceof AuthError)) throw e;
+        return authErrorResponse(e);
+      }
+    }) as typeof fetch;
+    const postFn = (body: unknown) => api<ConfirmStep>("POST", "/api/copy/confirm", body).then((x) => x.data);
+    return { postFn, bodies, restore: () => (globalThis.fetch = realFetch) };
+  };
+  /** A store whose noteBroadcast answers 503 the first `n` times (the server fails before sending). */
+  const flaky = (state: CopyMemoryState, n: number) => {
+    const store = createMemoryCopyStore(state);
+    let left = n;
+    return {
+      ...store,
+      noteBroadcast: async (...a: Parameters<typeof store.noteBroadcast>) => {
+        if (left-- > 0) throw new AuthError(503, "DB_UNAVAILABLE", "db down");
+        return store.noteBroadcast(...a);
+      },
+    };
+  };
+  const signed = async (d: FlowDeps, u: User) => {
+    const { b } = await quoteAndBuild(d, u);
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64")).signatures[0]);
+    return { b, sig, first: { orderId: b.orderId, signedTransaction } };
+  };
+
+  it("the auditor's PoF: one 5xx before broadcast -> the client re-posts the signed bytes, it's sent once and recorded", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const sends: Uint8Array[] = [];
+    const d = deps({ state, copy: flaky(state, 1), chain: { ...chain, send: async (r: Uint8Array) => (sends.push(r), chain.send(r)) } });
+    const { b, sig, first } = await signed(d, u);
+    const w = wire(d, u);
+    try {
+      const r = await pollConfirm(w.postFn, b.orderId, first, async () => {}, sig);
+      expect(r).toMatchObject({ status: "confirmed", signature: sig });
+      expect(w.bodies).toEqual([first, first]);
+      expect(sends.length).toBe(1);
+      expect(state.copies.size).toBe(1);
+    } finally {
+      w.restore();
+    }
+  });
+
+  it("5xx twice: one re-post, then NOT_BROADCAST ends it at once (no 31 polls, no rate limit), 'Nothing was spent'", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state, copy: flaky(state, 2) });
+    const { b, sig, first } = await signed(d, u);
+    const w = wire(d, u);
+    try {
+      await expect(pollConfirm(w.postFn, b.orderId, first, async () => {}, sig)).rejects.toMatchObject({
+        code: "NOT_BROADCAST",
+        message: expect.stringMatching(/Nothing was spent/),
+      });
+      expect(w.bodies.length).toBe(3);
+      expect(w.bodies[2]).toEqual({ orderId: b.orderId, signature: sig });
+      // Its blockhash may still be valid, so the order isn't failed on a guess.
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    } finally {
+      w.restore();
+    }
+  });
+
+  it("server: a never-broadcast order is failed only once its tx can no longer land", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const { b, sig } = await signed(d, u);
+    const bySig = (dd: FlowDeps) => confirmOrder(dd, post("/c", { orderId: b.orderId, signature: sig }, u), "copy");
+    // Still valid: NOT_BROADCAST with resend while the quote is open, without resend after it.
+    let err: unknown;
+    try {
+      await bySig(d);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toMatchObject({ code: "NOT_BROADCAST", details: { resend: true } });
+    const late = deps({ state, nowMs: () => Date.now() + 5 * 60_000 });
+    try {
+      await bySig(late);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toMatchObject({ code: "NOT_BROADCAST", details: { resend: false } });
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    // An RPC error is never taken as "expired".
+    const broken = deps({ state, chain: { ...chain, waitForConfirmation: async () => Promise.reject(new Error("rpc")) } });
+    expect(await code(bySig(broken))).toBe("NOT_BROADCAST");
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    // Expired with no trace on chain: failed, "nothing was spent".
+    const expired = deps({ state, chain: { ...chain, waitForConfirmation: async () => "expired" as const } });
+    expect(await code(bySig(expired))).toBe("NOT_BROADCAST");
+    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+    expect(state.copies.size).toBe(0);
+  });
+
+  it("server: signed bytes re-posted after the quote: not sent; failed once expired; recorded if it landed elsewhere", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const sends: Uint8Array[] = [];
+    const d = deps({ state, chain: { ...chain, send: async (r: Uint8Array) => (sends.push(r), chain.send(r)) } });
+    const { b, first } = await signed(d, u);
+    const late = (c: FlowDeps["chain"]) => deps({ state, chain: c, nowMs: () => Date.now() + 5 * 60_000 });
+    expect(await code(confirmOrder(late(d.chain), post("/c", first, u), "copy"))).toBe("QUOTE_EXPIRED");
+    expect(sends.length).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    // The same bytes broadcast some other way and landed: verified and recorded, not failed.
+    await chain.send(Buffer.from(first.signedTransaction, "base64"));
+    expect((await confirmOrder(late(d.chain), post("/c", first, u), "copy")).status).toBe("confirmed");
+    expect(state.copies.size).toBe(1);
+
+    const { b: b2, first: first2 } = await signed(deps({ state }), u);
+    const exp = late({ ...chain, waitForConfirmation: async () => "expired" as const });
+    expect(await code(confirmOrder(exp, post("/c", first2, u), "copy"))).toBe("QUOTE_EXPIRED");
+    expect(state.orders.get(b2.orderId)?.status).toBe("failed");
+  });
+
+  it("the sweep fails never-broadcast orders only after every confirm window is over", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const { b } = await quoteAndBuild(d, u);
+    const at = (min: number) => deps({ state, nowMs: () => Date.now() + min * 60_000 });
+    expect((await sweepBroadcastOrders(at(15))).abandoned).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    expect((await sweepBroadcastOrders(at(17))).abandoned).toBe(1);
+    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+    // A broadcast order is left to the normal sweep.
+    const { b: b2 } = await quoteAndBuild(d, u);
+    state.orders.get(b2.orderId)!.broadcastSignature = bs58.encode(Buffer.alloc(64, 1));
+    await sweepBroadcastOrders(at(17));
+    expect(state.orders.get(b2.orderId)?.status).toBe("pending");
   });
 });

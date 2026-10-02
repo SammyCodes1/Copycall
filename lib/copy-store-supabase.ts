@@ -203,6 +203,17 @@ export const supabaseCopyStore: CopyStore = {
       return order ? [{ order, attempts: c.attempts }] : [];
     });
   },
+  async failUnbroadcastBefore(createdBefore) {
+    const { data, error } = await getDb()
+      .from("pending_orders")
+      .update({ status: "failed" })
+      .eq("status", "pending")
+      .is("broadcast_signature", null)
+      .lt("created_at", iso(createdBefore))
+      .select("id");
+    if (error) fail("fail unbroadcast orders");
+    return (data ?? []).length;
+  },
   async noteSendAttempt(orderId, max) {
     const { data, error } = await getDb().rpc("note_send_attempt", { p_order_id: orderId, p_max: max });
     if (error) fail("note send attempt");

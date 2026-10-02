@@ -149,6 +149,15 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
         return { order: { ...o }, attempts: next.attempts };
       });
     },
+    async failUnbroadcastBefore(createdBefore) {
+      let n = 0;
+      for (const o of s.orders.values())
+        if (o.status === "pending" && o.broadcastSignature === null && o.createdAt < createdBefore) {
+          o.status = "failed";
+          n++;
+        }
+      return n;
+    },
     async noteSendAttempt(orderId, max) {
       const o = s.orders.get(orderId);
       const n = s.sends.get(orderId) ?? 0;

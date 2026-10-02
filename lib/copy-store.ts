@@ -110,6 +110,12 @@ export interface CopyStore {
     createdAfter: number;
     maxAttempts: number;
   }): Promise<{ order: PendingOrder; attempts: number }[]>;
+  /**
+   * H-03: fail pending orders we never broadcast, created before `createdBefore` (seconds). No
+   * confirm path can record those any more (the quote and the signature window are both over).
+   * Returns how many were failed.
+   */
+  failUnbroadcastBefore(createdBefore: number): Promise<number>;
   /** G-03: count one more broadcast of this pending order's signed bytes; false if over `max` (or not pending). */
   noteSendAttempt(orderId: string, max: number): Promise<boolean>;
   /** After POST /trades/: copies.status = reported, reported_at = now (claims: reported_at). */

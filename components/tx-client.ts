@@ -29,6 +29,8 @@ export class FlowError extends Error {
     readonly signature?: string,
     /** HTTP status of the failed response (0 = no response). */
     readonly httpStatus = 0,
+    /** H-03: NOT_BROADCAST said the signed bytes may still be sent. */
+    readonly resend = false,
   ) {
     super(message);
   }
@@ -42,6 +44,12 @@ export const CONFIRM_POLLS = 30;
  */
 export const REVIVE_TRIES = 3;
 const REVIVABLE = new Set(["QUOTE_EXPIRED", "ORDER_NOT_PENDING"]);
+/**
+ * H-03: how many times the browser re-posts the SAME signed bytes when the server may never have
+ * broadcast them (a lost response or 5xx, or NOT_BROADCAST with resend). The server dedupes: an
+ * order it already broadcast is just looked up, and an expired quote is never sent.
+ */
+export const RESEND_TRIES = 1;
 
 export async function api<T>(
   method: "GET" | "POST",
@@ -60,10 +68,10 @@ export async function api<T>(
   } catch {
     throw new FlowError("NETWORK", "Network error. Check your connection and try again.");
   }
-  const data = (await res.json().catch(() => ({}))) as { code?: string; message?: string; signature?: unknown };
+  const data = (await res.json().catch(() => ({}))) as { code?: string; message?: string; signature?: unknown; resend?: unknown };
   if (!res.ok) {
     const sig = typeof data.signature === "string" && /^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(data.signature) ? data.signature : undefined;
-    throw new FlowError(data.code ?? "ERROR", data.message ?? "Something went wrong", sig, res.status);
+    throw new FlowError(data.code ?? "ERROR", data.message ?? "Something went wrong", sig, res.status, data.resend === true);
   }
   return { status: res.status, data: data as T };
 }
@@ -80,7 +88,9 @@ export type ConfirmStep = Confirmed | { status: "pending"; signature: string };
  *  - a lost response (network error or 5xx) after we handed over a signed transaction: we know
  *    its signature locally, so check by signature;
  *  - QUOTE_EXPIRED / ORDER_NOT_PENDING carrying a signature: the server failed the order, but
- *    it may still have landed; the revive path re-verifies it on chain (at most REVIVE_TRIES).
+ *    it may still have landed; the revive path re-verifies it on chain (at most REVIVE_TRIES);
+ *  - H-03: after a lost response or 5xx, or NOT_BROADCAST with `resend`, the same signed bytes are
+ *    posted again (at most RESEND_TRIES); NOT_BROADCAST otherwise is final ("nothing was spent").
  * At most CONFIRM_POLLS checks in total. If we give up, the server's cron sweep still records
  * pending orders.
  */
@@ -92,7 +102,11 @@ export async function pollConfirm(
   knownSignature?: string,
 ): Promise<Confirmed> {
   let revives = 0;
-  const attempt = async (body: unknown): Promise<ConfirmStep> => {
+  let resends = 0;
+  const canResend =
+    typeof first === "object" && first !== null && "signedTransaction" in first && !!knownSignature;
+  type Step = ConfirmStep & { resend?: boolean };
+  const attempt = async (body: unknown): Promise<Step> => {
     try {
       return await post(body);
     } catch (err) {
@@ -100,11 +114,19 @@ export async function pollConfirm(
       const sig = err.signature ?? knownSignature;
       if (err.code === "VERIFY_UNAVAILABLE" && sig) return { status: "pending", signature: sig };
       if ((err.code === "NETWORK" || err.httpStatus >= 500) && knownSignature)
-        return { status: "pending", signature: knownSignature };
+        // H-03: the server may have failed before broadcasting: re-post the signed bytes (bounded).
+        return { status: "pending", signature: knownSignature, resend: canResend && resends < RESEND_TRIES };
+      if (err.code === "NOT_BROADCAST" && err.resend && knownSignature && canResend && resends < RESEND_TRIES)
+        return { status: "pending", signature: knownSignature, resend: true };
       if (REVIVABLE.has(err.code) && err.signature && revives < REVIVE_TRIES) {
         revives++;
         return { status: "pending", signature: err.signature };
       }
+      if (err.code === "NOT_BROADCAST")
+        throw new FlowError(
+          "NOT_BROADCAST",
+          err.resend ? "We couldn't send your transaction. Nothing was spent. Please try again." : err.message,
+        );
       if (err.code === "QUOTE_EXPIRED" && err.signature)
         throw new FlowError("QUOTE_EXPIRED", "The transaction expired before it landed. Nothing was spent. Refresh and try again.");
       throw err;
@@ -113,7 +135,10 @@ export async function pollConfirm(
   let r = await attempt(first);
   for (let i = 0; r.status === "pending" && i < CONFIRM_POLLS; i++) {
     await wait(2000);
-    r = await attempt({ orderId, signature: r.signature });
+    if (r.resend) {
+      resends++;
+      r = await attempt(first);
+    } else r = await attempt({ orderId, signature: r.signature });
   }
   if (r.status !== "confirmed") {
     throw new FlowError(

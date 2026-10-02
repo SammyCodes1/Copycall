@@ -811,8 +811,13 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     signature = bs58.encode(tx.signatures[0]);
     if (order.broadcastSignature === signature) {
       // E-02: already broadcast once; never say "Nothing was sent" now. Just look it up again.
+    } else if (now > order.expiresAt) {
+      // H-03: never broadcast by us and past the quote, so we won't send it now. Settle it from the
+      // chain (it may have been sent some other way): fail it only once it can no longer land.
+      const r = await resolveUnbroadcast(d, order, signature);
+      if (r !== "landed") throw quoteExpired("Quote expired, refresh. Nothing was sent.");
+      // It landed after all: verified and recorded below like any other.
     } else {
-      if (now > order.expiresAt) throw quoteExpired("Quote expired, refresh. Nothing was sent.");
       if (await d.copy.signatureUsed(signature))
         throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
       // E-02: remember the signature BEFORE broadcasting, so a lost response can still be confirmed.
@@ -829,6 +834,24 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     if (!isCanonicalSignatureB58(signature)) throw rejected("that isn't a valid signature");
     if (await d.copy.signatureUsed(signature))
       throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
+    if (!revive && order.broadcastSignature === null) {
+      // H-03: we never broadcast this order (e.g. a 5xx before the send). Don't poll for a
+      // transaction nobody sent: say so, and fail the order once it can no longer land.
+      const r = await resolveUnbroadcast(d, order, signature);
+      if (r === "expired")
+        throw new AuthError(409, "NOT_BROADCAST", "This transaction was never sent, so nothing was spent. Start again.");
+      if (r === "pending") {
+        const canSend = now <= order.expiresAt;
+        throw new AuthError(
+          409,
+          "NOT_BROADCAST",
+          canSend
+            ? "This transaction hasn't been sent yet."
+            : "This transaction was never sent and the quote expired, so nothing was spent. Start again.",
+          { orderId: order.id, resend: canSend },
+        );
+      }
+    }
   } else {
     // Mock mode only: land the exact stored message on the mock chain.
     if (!d.mock || !d.chain.simulateSignAndSend) {
@@ -850,6 +873,32 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     revive,
     definite,
   });
+}
+
+/**
+ * H-03: an order we never broadcast. "landed": the signature is on chain (verify it normally).
+ * "expired": its blockhash is past and there is still no trace of it, so it can never land; the
+ * order is failed. "pending": it could still land (or be sent); nothing is changed.
+ */
+async function resolveUnbroadcast(
+  d: FlowDeps,
+  order: PendingOrder,
+  signature: string,
+): Promise<"landed" | "expired" | "pending"> {
+  let state: Awaited<ReturnType<Chain["waitForConfirmation"]>>;
+  try {
+    state = await d.chain.waitForConfirmation(signature, order.lastValidBlockHeight, 0, blockhashOf(order) ?? undefined);
+  } catch {
+    return "pending"; // RPC trouble: never fail an order on a guess
+  }
+  if (state === "confirmed" || state === "failed") return "landed";
+  if (state === "expired") {
+    if (await d.chain.getLandedTransaction(signature)) return "landed";
+    await d.copy.failOrder(order.id);
+    d.log?.(`${order.kind} ${order.id.slice(0, 8)}: never broadcast and expired; failed`);
+    return "expired";
+  }
+  return "pending";
 }
 
 /** G-03: how many times one order's signed bytes may be broadcast in total. */
@@ -1119,6 +1168,8 @@ export type SweepSummary = {
   gaveUp: number;
   /** Orders claimed but not reached within SWEEP.budgetMs (they keep their turn order). */
   skipped: number;
+  /** H-03: never-broadcast pending orders past every confirm window, failed. */
+  abandoned: number;
 };
 
 /**
@@ -1146,6 +1197,9 @@ export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
     unavailable: 0,
     gaveUp: 0,
     skipped: 0,
+    // H-03: past the quote AND the 15 min signature window nothing can record these, and their
+    // blockhash is long expired: fail them so they don't sit as "pending" (+60 s margin).
+    abandoned: await d.copy.failUnbroadcastBefore(now - ORDER_LOOKUP_SEC - 60),
   };
   const alert = d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`));
   const giveUp = async (o: PendingOrder, why: string) => {
