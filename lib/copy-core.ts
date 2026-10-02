@@ -1075,7 +1075,8 @@ async function verifyAndRecord(
     // I-01 / I-03 / I-04: "expired" from the block height is only a hint. Fail ONLY for our own
     // broadcast signature (or an order we never broadcast), and only if provablyDead.
     const ours = order.broadcastSignature === null || order.broadcastSignature === signature;
-    if (revive || (ours && (await provablyDead(d, order, signature)))) {
+    // A revive (order already failed) gets the same proof before "nothing was spent".
+    if (ours && (await provablyDead(d, order, signature))) {
       if (!revive) await d.copy.failOrder(order.id);
       // F-04: carries the signature, so the client re-checks it (bounded) through the revive path.
       throw new AuthError(409, "QUOTE_EXPIRED", "The transaction expired before it landed, so nothing was spent.", {

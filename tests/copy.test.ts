@@ -3055,3 +3055,22 @@ describe("J-07: the real adapter reads the payer's post-tx lamports from meta.po
     }
   });
 });
+
+describe("I-01: a revive of a failed order says 'nothing was spent' only with the same proof", () => {
+  it("expired height hint but blockhash still valid -> pending, not QUOTE_EXPIRED; provably dead -> QUOTE_EXPIRED", async () => {
+    const chain = getSharedMockChain();
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const quiet = { ...chain, send: async (raw: Uint8Array) => bs58.encode(VersionedTransaction.deserialize(raw).signatures[0]) };
+    const d = deps({ state, chain: quiet });
+    const { b } = await quoteAndBuild(d, u);
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64")).signatures[0]);
+    await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction }, u), "copy");
+    await createMemoryCopyStore(state).failOrder(b.orderId); // e.g. failed by an older build on a guess
+    const hint = deps({ state, chain: { ...quiet, waitForConfirmation: async () => "expired" as const } });
+    expect((await confirmOrder(hint, post("/c", { orderId: b.orderId, signature: sig }, u), "copy")).status).toBe("pending");
+    const dead = deps({ state, chain: { ...quiet, waitForConfirmation: async () => "expired" as const, isBlockhashValid: async () => false } });
+    expect(await code(confirmOrder(dead, post("/c", { orderId: b.orderId, signature: sig }, u), "copy"))).toBe("QUOTE_EXPIRED");
+  });
+});
