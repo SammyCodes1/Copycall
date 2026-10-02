@@ -1387,6 +1387,20 @@ describe("E-06: the Panta instruction's account roles are checked (assumed order
     expect(short.res).toBe("TX_REJECTED");
   });
 
+  it("G-06: the market can't repeat in another slot; the mint and Token program can't be writable", async () => {
+    const dup = await attempt((m) => (m.accounts[3] = { ...m.accounts[1] }));
+    expect(dup.res).toBe("TX_REJECTED");
+    expect(dup.log).toContain("ACCOUNT_ROLES");
+    const appended = await attempt((m) => m.accounts.push({ ...m.accounts[1], isWritable: false }));
+    expect(appended.res).toBe("TX_REJECTED");
+    for (const slot of [4, 5]) {
+      const w = await attempt((m) => (m.accounts[slot] = { ...m.accounts[slot], isWritable: true }));
+      expect(w.res).toBe("TX_REJECTED");
+      expect(w.log).toContain("ACCOUNT_ROLES");
+    }
+    expect((await attempt(() => {})).res).toBe("OK");
+  });
+
   it("claims: the user slot and market slot are enforced too", async () => {
     const u = await signedInUser();
     const win = (await myPositions(deps(), get("/p", u))).positions.find((p) => p.status === "claimable")!;
@@ -2210,5 +2224,47 @@ describe("Addendum G: broadcast liveness, definite rejections, bounded re-sends,
         await code(confirmOrder(d, post("/c", { orderId: b.orderId, signature: bs58.encode(bad) }, u), "copy")),
       ).toBe("TX_REJECTED");
     });
+  });
+});
+
+describe("G-05: in real mode a claim build fails closed without an on-chain position reader", () => {
+  const winFor = async (u: User) =>
+    (await myPositions(deps(), get("/p", u))).positions.find((p) => p.status === "claimable")!;
+  const chain = getSharedMockChain();
+  const { getPositionSharesBase: _drop, ...noReader } = chain;
+  void _drop;
+
+  for (const [name, c] of [
+    ["no reader at all (the real adapter today)", noReader],
+    ["a reader that can't answer (null)", { ...chain, getPositionSharesBase: async () => null }],
+    ["a reader that errors", { ...chain, getPositionSharesBase: async () => Promise.reject(new Error("rpc")) }],
+  ] as const) {
+    it(`${name}: 503 CLAIM_UNVERIFIED, nothing stored, even when Panta's numbers agree`, async () => {
+      const u = await signedInUser();
+      const win = await winFor(u);
+      const state = createCopyMemoryState();
+      const logs: string[] = [];
+      const d = deps({ state, chain: c, mock: false, log: (m: string) => logs.push(m) });
+      let err: unknown;
+      try {
+        await buildClaimTx(d, post("/cb", { marketId: win.marketId }, u));
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toMatchObject({ code: "CLAIM_UNVERIFIED", status: 503 });
+      expect((err as Error).message).toMatch(/claim directly on Panta/);
+      expect(state.orders.size).toBe(0);
+      expect(logs.join("\n")).toContain("CLAIM_UNVERIFIED");
+    });
+  }
+
+  it("mock mode keeps working with the mock reader, and the real-mode reader path still checks the amount", async () => {
+    const u = await signedInUser();
+    const win = await winFor(u);
+    expect((await buildClaimTx(deps(), post("/cb", { marketId: win.marketId }, u))).orderId).toBeTruthy();
+    const lying = { ...chain, getPositionSharesBase: async () => 1n };
+    expect(await code(buildClaimTx(deps({ chain: lying, mock: false }), post("/cb", { marketId: win.marketId }, u)))).toBe(
+      "TX_REJECTED",
+    );
   });
 });

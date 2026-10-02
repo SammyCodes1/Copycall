@@ -81,3 +81,37 @@ describe("E-03: payerUsdcOutFromMeta", () => {
     expect(t?.innerPrograms).toBeNull();
   });
 });
+
+describe("G-04: duplicated rows and owner changes are unknown, never an offset", () => {
+  const meta = (pre: TokenBalanceRow[], post: TokenBalanceRow[]) => ({ preTokenBalances: pre, postTokenBalances: post });
+  const other = key();
+  const keys4 = [payer, ata, vault, other];
+
+  it("the auditor's PoF: a duplicated post row used to give 0 (actual 5); now null", () => {
+    const pre = [row(1, 10_000_000n)];
+    const post = [row(1, 5_000_000n), row(1, 5_000_000n)];
+    expect(payerUsdcOutFromMeta(meta(pre, post), keys, payer)).toBeNull();
+    // A duplicated pre row (it used to say 15) is refused too.
+    expect(payerUsdcOutFromMeta(meta([row(1, 10_000_000n), row(1, 10_000_000n)], [row(1, 5_000_000n)]), keys, payer)).toBeNull();
+  });
+
+  it("the auditor's PoF: an account that becomes payer-owned mid-tx used to offset the outflow to 0; now null", () => {
+    const pre = [row(1, 10_000_000n), row(3, 5_000_000n, "someoneElse")];
+    const post = [row(1, 5_000_000n), row(3, 5_000_000n, payer)];
+    expect(payerUsdcOutFromMeta(meta(pre, post), keys4, payer)).toBeNull();
+    // ... or stops being payer-owned.
+    const away = [row(1, 10_000_000n), row(3, 5_000_000n, payer)];
+    expect(payerUsdcOutFromMeta(meta(away, [row(1, 5_000_000n), row(3, 5_000_000n, "x")]), keys4, payer)).toBeNull();
+  });
+
+  it("honest cases still measure: stable owners, an account only in post (a fresh ATA), non-USDC rows ignored", () => {
+    const pre = [row(1, 10_000_000n), row(2, 0n, "vaultOwner")];
+    const post = [row(1, 5_000_000n), row(2, 5_000_000n, "vaultOwner")];
+    expect(payerUsdcOutFromMeta(meta(pre, post), keys, payer)).toBe(5_000_000n);
+    expect(payerUsdcOutFromMeta(meta([row(2, 9n, "v")], [row(1, 3n), row(2, 6n, "v")]), keys, payer)).toBe(-3n);
+    const mint2 = key();
+    expect(
+      payerUsdcOutFromMeta(meta([...pre, row(3, 1n, "a", mint2), row(3, 1n, "b", mint2)], post), keys4, payer),
+    ).toBe(5_000_000n);
+  });
+});

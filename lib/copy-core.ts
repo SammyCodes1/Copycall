@@ -674,9 +674,25 @@ async function independentClaimMin(
     throw rejected("Panta's claim doesn't match your position");
   }
   let min = winning;
-  const onChain = d.chain.getPositionSharesBase
-    ? await d.chain.getPositionSharesBase(marketId, session.w, toApiSide(side))
-    : null;
+  // G-05: in real mode the payout floor must come from an on-chain position read. Until a reader
+  // for Panta's position account exists (its layout isn't documented, and we won't guess it), the
+  // claim build fails closed instead of trusting Panta's winningShares alone.
+  let onChain: bigint | null = null;
+  if (d.chain.getPositionSharesBase) {
+    try {
+      onChain = await d.chain.getPositionSharesBase(marketId, session.w, toApiSide(side));
+    } catch {
+      onChain = null;
+    }
+  }
+  if (onChain === null && !d.mock) {
+    d.log?.(`claim build CLAIM_UNVERIFIED (no on-chain position reader)`);
+    throw new AuthError(
+      503,
+      "CLAIM_UNVERIFIED",
+      "Claiming through Copycall isn't available yet: we can't verify your winnings on-chain. You can claim directly on Panta.",
+    );
+  }
   if (onChain !== null) {
     if (onChain !== winning) {
       d.log?.(`claim build CLAIM_MISMATCH (on-chain position)`);

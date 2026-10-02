@@ -9,7 +9,10 @@
  *  - there are no USDC rows at all (every copy debits and every claim pays USDC);
  *  - a USDC row has no `owner`, or an accountIndex outside the message's keys;
  *  - the user's USDC ATA is among the transaction's accounts but has no row
- *    (pre or post), or a row says someone else owns it.
+ *    (pre or post), or a row says someone else owns it;
+ *  - G-04: two USDC rows (pre, or post) for the same accountIndex, or an account
+ *    whose owner differs between pre and post (an owner change mid-transaction
+ *    would move USDC in or out of what we count as the payer's).
  */
 import { USDC_MINT, associatedTokenAddress } from "./solana-constants";
 
@@ -47,6 +50,20 @@ export function payerUsdcOutFromMeta(meta: TokenMeta, accountKeys: readonly stri
     }
     return n;
   };
+  // G-04: one row per account per side, and a stable owner across the transaction.
+  const owners = (rows: TokenBalanceRow[]): Map<number, unknown> | null => {
+    const m = new Map<number, unknown>();
+    for (const r of rows) {
+      if (r?.mint !== USDC_MINT) continue;
+      if (m.has(r.accountIndex)) return null;
+      m.set(r.accountIndex, r.owner);
+    }
+    return m;
+  };
+  const preOwners = owners(pre);
+  const postOwners = owners(post);
+  if (!preOwners || !postOwners) return null;
+  for (const [i, o] of preOwners) if (postOwners.has(i) && postOwners.get(i) !== o) return null;
   const before = sum(pre);
   const after = sum(post);
   if (before === null || after === null || seen === 0) return null;

@@ -145,12 +145,19 @@ function checkAccountRoles(ix: PantaInstruction, ctx: GuardContext, userUsdcAta:
     );
   if (a[R.mint].pubkey !== USDC_MINT || a[R.tokenProgram].pubkey !== TOKEN_PROGRAM_ID)
     throw new TxRejected("ACCOUNT_ROLES", "The order isn't for USDC on the SPL Token program");
+  // G-06: the mint and the Token program are never written by an order or a claim.
+  if (a[R.mint].isWritable || a[R.tokenProgram].isWritable)
+    throw new TxRejected("ACCOUNT_ROLES", "The order would write to the USDC mint or the Token program");
   // The user, the market and the user's USDC account appear only in their own slots.
   for (let i = 0; i < a.length; i++) {
     if (i !== R.user && a[i].pubkey === ctx.feePayer) throw new TxRejected("ACCOUNT_ROLES", "Your wallet appears twice");
     if (i !== R.userUsdc && a[i].pubkey === userUsdcAta)
       throw new TxRejected("ACCOUNT_ROLES", "Your USDC account appears twice");
+    if (i !== R.market && a[i].pubkey === ctx.marketId)
+      throw new TxRejected("ACCOUNT_ROLES", "The market appears in another account slot");
   }
+  // Not checked until Panta's layout is confirmed (G-06, [UNVERIFIED]): exact account counts,
+  // the System program slot, and the position PDA.
 }
 
 export type PrimaryOrderArgs = { amount: bigint; side: "yes" | "no"; shares: bigint; slippageBps: number };

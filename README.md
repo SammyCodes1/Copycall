@@ -194,6 +194,10 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    **Claim minimum (E-04):** Panta's `winningShares` must equal the claimable shares from `GET /positions`,
    the on-chain position where the chain reader can decode it (mock only so far), and be no less than the
    guaranteed shares of the copies recorded here (shares × (1 − 5 %) each). The payout must be at least that.
+   **In real mode claims are refused (503 `CLAIM_UNVERIFIED`, G-05)** until an on-chain position reader
+   exists: Panta's position account layout is undocumented and isn't guessed. Users claim on Panta directly
+   meanwhile. `node scripts/panta-build-check.mjs --claim --market … --wallet …` builds and *simulates* a
+   claim (never signs or sends) and prints its accounts and data, to learn that layout.
 3. The wallet signs those exact bytes. `POST /api/copy/confirm` `{orderId, signedTransaction}`: the message
    hash must match, the signature must verify for the session wallet and be unused. The server broadcasts,
    waits for confirmation, re-checks the landed transaction (including the USDC that actually left the wallet,
