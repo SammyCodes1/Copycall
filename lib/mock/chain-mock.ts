@@ -261,8 +261,14 @@ export function createMockChain(): MockChain {
       pos.set(`${loss[0]}|${loss[1]}`, { marketId: loss[0], side: loss[1], sharesBase: 9_600_000n, claimed: false });
   }
 
+  /** USDC held by `owner` across its token accounts (like meta.pre/postTokenBalances). */
+  const usdcOf = (l: Ledger, owner: string) =>
+    [...l.tokens.values()].filter((t) => t.mint === USDC_MINT && t.owner === owner).reduce((n, t) => n + t.amount, 0n);
+
   function land(message: VersionedMessage, signature: string, simulated: boolean) {
     if (state.landed.has(signature)) throw new Error("Transaction already processed");
+    const payer = message.staticAccountKeys[0].toBase58();
+    const usdcBefore = usdcOf(state, payer);
     const next = cloneLedger(state);
     let err: unknown = null;
     try {
@@ -273,7 +279,8 @@ export function createMockChain(): MockChain {
     } catch (e) {
       err = e instanceof MockTxError ? { InstructionError: [e.index, e.reason] } : { error: String(e) };
     }
-    state.landed.set(signature, { err, message, signatures: [signature], simulated });
+    const payerUsdcOutBase = usdcBefore - usdcOf(state, payer);
+    state.landed.set(signature, { err, message, signatures: [signature], simulated, payerUsdcOutBase });
     return signature;
   }
 
@@ -335,7 +342,9 @@ export function createMockChain(): MockChain {
 
     async getLandedTransaction(signature) {
       const t = state.landed.get(signature);
-      return t ? { err: t.err, message: t.message, signatures: t.signatures } : null;
+      return t
+        ? { err: t.err, message: t.message, signatures: t.signatures, payerUsdcOutBase: t.payerUsdcOutBase ?? 0n }
+        : null;
     },
 
     async simulateSignAndSend(messageBytes) {

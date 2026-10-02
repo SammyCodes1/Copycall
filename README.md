@@ -152,12 +152,21 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    `node --env-file=.env.local scripts/panta-fee-model.mjs --market <marketId> --side yes [--amount 5.00]`.
    It prints the quote, both predictions and `detected: inclusive|on_top|ambiguous|unknown`, and exits 2 when
    nothing should be pinned. In mock: `MOCK_PANTA=true [MOCK_PANTA_FEE_MODEL=on_top] node scripts/panta-fee-model.mjs`.
+
+   **Order arguments** are decoded strictly against an *assumed* layout (`PRIMARY_ORDER_LAYOUT` in
+   `lib/tx-guard.ts`, 27 bytes: discriminator, amount u64, side u8, shares u64, max slippage u16 bps; Panta
+   publishes no IDL). The amount must equal the quoted deposit, the side must match the trade, shares must be
+   above zero, slippage no looser than the setting, and the on-chain minimum no lower than the review's
+   "Min. shares" (Panta's `expectedShares` too). Any other length or value fails closed.
 3. The wallet signs those exact bytes. `POST /api/copy/confirm` `{orderId, signedTransaction}`: the message
    hash must match, the signature must verify for the session wallet and be unused. The server broadcasts,
-   waits for confirmation, re-checks the landed transaction, records the copy atomically
+   waits for confirmation, re-checks the landed transaction (including the USDC that actually left the wallet,
+   from its pre/post token balances: above the stake, the order is failed and nothing is recorded), records the copy atomically
    (`complete_order`), then reports it to Panta (`POST /trades/`).
 4. `/positions` (`GET /api/positions`, 30 s cache) lists holdings from Panta's index; a resolved win shows
-   Claim (`POST /api/claim/build` `{marketId}` then `/api/claim/confirm`), with no USDC allowed to leave.
+   Claim (`POST /api/claim/build` `{marketId}` then `/api/claim/confirm`), with no USDC allowed to leave. The
+   claim must list the wallet's own USDC ATA, and both the simulation and the landed transaction must show it
+   gaining at least the winning shares (1 USDC each).
 
 Mock mode runs the same flow against a synthetic in-memory chain (`lib/mock/chain-mock.ts`); signing is
 simulated server-side and labelled "Simulated signing" everywhere. Demo: sign in, follow a trader, run both

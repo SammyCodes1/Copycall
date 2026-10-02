@@ -9,7 +9,7 @@ import "server-only";
  */
 import { Connection, PublicKey, type ConfirmedSignatureInfo, type VersionedTransaction } from "@solana/web3.js";
 import type { Chain, ConfirmationState } from "./chain";
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "./solana-constants";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, USDC_MINT } from "./solana-constants";
 import creatorsJson from "@/fixtures/creators.json";
 import { isMockMode, requireEnv } from "./env";
 
@@ -156,6 +156,21 @@ export const rpcChain: Chain = {
       maxSupportedTransactionVersion: 0,
     });
     if (!tx) return null;
-    return { err: tx.meta?.err ?? null, message: tx.transaction.message, signatures: tx.transaction.signatures };
+    // USDC the fee payer lost, from the landed transaction's own token balances.
+    let payerUsdcOutBase: bigint | null = null;
+    const payer = tx.transaction.message.staticAccountKeys[0]?.toBase58();
+    if (tx.meta?.preTokenBalances && tx.meta.postTokenBalances && payer) {
+      const sum = (rows: typeof tx.meta.preTokenBalances) =>
+        (rows ?? [])
+          .filter((r) => r.mint === USDC_MINT && r.owner === payer)
+          .reduce((n, r) => n + BigInt(r.uiTokenAmount.amount), 0n);
+      payerUsdcOutBase = sum(tx.meta.preTokenBalances) - sum(tx.meta.postTokenBalances);
+    }
+    return {
+      err: tx.meta?.err ?? null,
+      message: tx.transaction.message,
+      signatures: tx.transaction.signatures,
+      payerUsdcOutBase,
+    };
   },
 };

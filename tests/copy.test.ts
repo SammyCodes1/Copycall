@@ -652,3 +652,176 @@ describe("positions + claim", () => {
     );
   });
 });
+
+describe("D-02 / B3-02: primary_order_usdc args are decoded strictly", () => {
+  /** A build whose Panta instruction data is edited by `edit` (Panta or a MITM tampering). */
+  const tampered = (edit: (data: Buffer) => Buffer, logs: string[], over: Partial<{ expectedShares: string }> = {}) =>
+    deps({
+      log: (m: string) => logs.push(m),
+      panta: {
+        ...deps().panta,
+        buildPrimaryOrder: async (req) => {
+          const b = await panta.buildPrimaryOrder(req);
+          const ixs = structuredClone(b.instructions);
+          const main = ixs.find((i) => i.programId === MOCK_PROGRAM_ID)!;
+          main.data = edit(Buffer.from(main.data, "base64")).toString("base64");
+          return { ...b, ...over, instructions: ixs };
+        },
+      },
+    });
+
+  const cases: [string, (d: Buffer) => Buffer, string][] = [
+    ["slippage 0xFFFF (the PoF)", (d) => (d.writeUInt16LE(0xffff, 25), d), "SLIPPAGE_TOO_HIGH"],
+    ["slippage one bp above the setting", (d) => (d.writeUInt16LE(d.readUInt16LE(25) + 1, 25), d), "SLIPPAGE_TOO_HIGH"],
+    ["zero shares", (d) => (d.writeBigUInt64LE(0n, 17), d), "ZERO_SHARES"],
+    ["the other side", (d) => ((d[16] = d[16] === 1 ? 0 : 1), d), "SIDE_MISMATCH"],
+    ["an unreadable side byte", (d) => ((d[16] = 7), d), "ORDER_ARGS"],
+    ["a different amount", (d) => (d.writeBigUInt64LE(d.readBigUInt64LE(8) - 1n, 8), d), "DEPOSIT_MISMATCH"],
+    ["fewer shares than the review's minimum", (d) => (d.writeBigUInt64LE(d.readBigUInt64LE(17) / 2n, 17), d), "MIN_SHARES_TOO_LOW"],
+    ["trailing bytes", (d) => Buffer.concat([d, Buffer.from([0])]), "ORDER_ARGS"],
+    ["a truncated layout", (d) => d.subarray(0, 25), "ORDER_ARGS"],
+  ];
+  for (const [name, edit, why] of cases) {
+    it(`refuses ${name} before any wallet prompt (${why})`, async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const logs: string[] = [];
+      const d = { ...tampered(edit, logs), copy: createMemoryCopyStore(state) };
+      expect(await code(quoteAndBuild(d, u))).toBe("TX_REJECTED");
+      expect(logs.join("\n")).toContain(why);
+      expect(state.orders.size).toBe(0);
+    });
+  }
+
+  it("refuses a build whose expectedShares is below the displayed Min. shares", async () => {
+    const u = await signedInUser();
+    const logs: string[] = [];
+    expect(await code(quoteAndBuild(tampered((d) => d, logs, { expectedShares: "0.01" }), u))).toBe("TX_REJECTED");
+  });
+
+  it("the untampered build passes: on-chain min >= displayed min", async () => {
+    const u = await signedInUser();
+    const { q, b } = await quoteAndBuild(deps(), u);
+    const shown = copyAmounts({ ...q, depositUsdc: q.amountUsdc, feeModel: q.feeModel });
+    const data = Buffer.from(
+      VersionedTransaction.deserialize(Buffer.from(b.transaction, "base64")).message.compiledInstructions.find(
+        (ix) => ix.data.length === 27, // the only primary_order_usdc-sized instruction
+      )!.data,
+    );
+    const onChainMin = (data.readBigUInt64LE(17) * BigInt(10_000 - data.readUInt16LE(25))) / 10_000n;
+    expect(onChainMin).toBeGreaterThanOrEqual(usdcToBase(shown.minShares));
+    expect(data.readUInt16LE(25)).toBe(q.slippageBps);
+  });
+});
+
+describe("D-03: the landed outflow is checked at confirm", () => {
+  const withLanded = (adjust: (moved: bigint | null | undefined) => bigint | null) => {
+    const chain = getSharedMockChain();
+    return {
+      ...chain,
+      getLandedTransaction: async (sig: string) => {
+        const t = await chain.getLandedTransaction(sig);
+        return t && { ...t, payerUsdcOutBase: adjust(t.payerUsdcOutBase) };
+      },
+    };
+  };
+
+  it("records the real outflow from token balances (== the stake)", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const { b } = await quoteAndBuild(d, u);
+    const r = await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u), "copy");
+    expect(r.status).toBe("confirmed");
+    const landed = await getSharedMockChain().getLandedTransaction(r.signature);
+    expect(landed?.payerUsdcOutBase).toBe(usdcToBase(state.orders.get(b.orderId)!.maxUsdcOut!));
+  });
+
+  it("rejects and fails the order when more USDC left the wallet than the stake", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const logs: string[] = [];
+    const d = deps({ state, chain: withLanded((m) => (m ?? 0n) + 1n), log: (m: string) => logs.push(m) });
+    const { b } = await quoteAndBuild(d, u);
+    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await code(confirmOrder(d, req, "copy"))).toBe("OVER_LIMIT");
+    expect(state.copies.size).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+    expect(logs.join("\n")).toContain("OVER_LIMIT");
+  });
+
+  it("fails closed (retryable, nothing recorded) when the token balances are missing", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state, chain: withLanded(() => null) });
+    const { b } = await quoteAndBuild(d, u);
+    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await code(confirmOrder(d, req, "copy"))).toBe("VERIFY_UNAVAILABLE");
+    expect(state.copies.size).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+  });
+});
+
+describe("B3-03: claims must pay the winnings into the user's own USDC ATA", () => {
+  const winFor = async (u: User) =>
+    (await myPositions(deps(), get("/p", u))).positions.find((p) => p.status === "claimable")!;
+
+  /** Claim build with the payout account (index 2) swapped for someone else's USDC ATA. */
+  const rerouted = (keepUserAta: boolean, logs: string[]) => {
+    const thief = Keypair.generate().publicKey.toBase58();
+    getSharedMockChain().seedWallet(thief);
+    const thiefAta = associatedTokenAddress(thief, USDC_MINT);
+    return deps({
+      log: (m: string) => logs.push(m),
+      panta: {
+        ...deps().panta,
+        buildClaim: async (req) => {
+          const c = await panta.buildClaim(req);
+          const ixs = structuredClone(c.instructions);
+          const main = ixs.find((i) => i.programId === MOCK_PROGRAM_ID)!;
+          const userAta = main.accounts[2].pubkey;
+          main.accounts[2] = { ...main.accounts[2], pubkey: thiefAta };
+          if (keepUserAta) main.accounts.push({ pubkey: userAta, isSigner: false, isWritable: true });
+          return { ...c, instructions: ixs };
+        },
+      },
+    });
+  };
+
+  it("refuses a claim whose accounts don't include the user's USDC ATA", async () => {
+    const u = await signedInUser();
+    const win = await winFor(u);
+    const logs: string[] = [];
+    expect(await code(buildClaimTx(rerouted(false, logs), post("/cb", { marketId: win.marketId }, u)))).toBe("TX_REJECTED");
+    expect(logs.join("\n")).toContain("PAYOUT_ACCOUNT");
+  });
+
+  it("refuses a claim that lists the user's ATA but pays someone else (simulation)", async () => {
+    const u = await signedInUser();
+    const win = await winFor(u);
+    const logs: string[] = [];
+    expect(await code(buildClaimTx(rerouted(true, logs), post("/cb", { marketId: win.marketId }, u)))).toBe("TX_REJECTED");
+    expect(logs.join("\n")).toContain("PAYOUT_TOO_LOW");
+  });
+
+  it("rejects at confirm when the landed payout is below the winning shares", async () => {
+    const u = await signedInUser();
+    const win = await winFor(u);
+    const state = createCopyMemoryState();
+    const chain = getSharedMockChain();
+    const d = deps({
+      state,
+      chain: {
+        ...chain,
+        getLandedTransaction: async (sig: string) => {
+          const t = await chain.getLandedTransaction(sig);
+          return t && { ...t, payerUsdcOutBase: (t.payerUsdcOutBase ?? 0n) + 1n }; // 1 base unit short
+        },
+      },
+    });
+    const b = await buildClaimTx(d, post("/cb", { marketId: win.marketId }, u));
+    const req = post("/cc", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await code(confirmOrder(d, req, "claim"))).toBe("PAYOUT_TOO_LOW");
+    expect(state.claims.size).toBe(0);
+  });
+});

@@ -10,6 +10,11 @@ export type LandedTx = {
   err: unknown | null;
   message: VersionedMessage;
   signatures: string[];
+  /**
+   * USDC (base units) the fee payer's wallet lost in this transaction, from the
+   * chain's own pre/post token balances (negative = received). null if unknown.
+   */
+  payerUsdcOutBase?: bigint | null;
 };
 
 export type ConfirmationState = "confirmed" | "failed" | "pending" | "expired";

@@ -52,6 +52,7 @@ import {
 } from "./solana-constants";
 import {
   copyAmounts,
+  toMicro,
   copyUsdcLimitBase,
   feeCapBase,
   fromMicro,
@@ -371,6 +372,8 @@ async function assembleAndStore(
     lastValidBlockHeight: number | null;
     maxUsdcOutBase: bigint;
     copyOutflow?: GuardContext["copyOutflow"];
+    copyTerms?: GuardContext["copyTerms"];
+    claimMinUsdcInBase?: bigint;
     order: Omit<
       PendingOrder,
       | "id"
@@ -398,9 +401,11 @@ async function assembleAndStore(
       pantaProgramIds: d.pantaProgramIds,
       maxUsdcOutBase: a.maxUsdcOutBase,
       copyOutflow: a.copyOutflow,
+      copyTerms: a.copyTerms,
+      claimMinUsdcInBase: a.claimMinUsdcInBase,
     });
     tx = assembleTransaction(a.instructions, a.recentBlockhash, a.wallet);
-    sim = await simulateAndCheck(d.chain, tx, a.wallet, a.maxUsdcOutBase);
+    sim = await simulateAndCheck(d.chain, tx, a.wallet, a.maxUsdcOutBase, a.claimMinUsdcInBase ?? 0n);
   } catch (err) {
     if (err instanceof TxRejected) d.log?.(`${a.kind} build rejected: ${err.code}`);
     asRejection(err);
@@ -487,6 +492,30 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
   ) {
     throw rejected("Panta built a different order than the one quoted");
   }
+  // D-02: the on-chain minimum must be at least the "Min. shares" the review showed.
+  let minSharesBase: bigint;
+  try {
+    minSharesBase = toMicro(
+      copyAmounts({
+        feeModel: model,
+        depositUsdc: usdcExact(deposit),
+        feeUsdc: tok.quote.feeUsdc,
+        avgPrice: tok.quote.avgPrice,
+        shares: tok.quote.shares,
+        slippageBps: tok.slippageBps,
+      }).minShares,
+    );
+  } catch {
+    throw rejected("the quote can't be checked");
+  }
+  let expectedBase: bigint;
+  try {
+    expectedBase = toMicro(b.expectedShares);
+  } catch {
+    throw rejected("Panta built an order with unreadable shares");
+  }
+  if (expectedBase <= 0n || expectedBase < minSharesBase)
+    throw rejected("Panta built an order for fewer shares than the review shows");
   // Hard total: fee and slippage stay inside the stake; the guard checks the actual outflow.
   const built = await assembleAndStore(d, {
     kind: "copy",
@@ -498,6 +527,7 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
     lastValidBlockHeight: b.lastValidBlockHeight ?? null,
     maxUsdcOutBase: maxOut,
     copyOutflow: { model, depositBase: deposit, feeBase: fee },
+    copyTerms: { side: toApiSide(trade.side), maxSlippageBps: settings.slippageBps, minSharesBase },
     order: {
       leaderTradeId: trade.id,
       side: trade.side,
@@ -544,6 +574,7 @@ export async function buildClaimTx(d: FlowDeps, request: Request): Promise<Built
     recentBlockhash: c.recentBlockhash,
     lastValidBlockHeight: c.lastValidBlockHeight ?? null,
     maxUsdcOutBase: 0n, // a claim may never move USDC out of the wallet
+    claimMinUsdcInBase: usdcToBase(c.winningShares), // B3-03: and must pay the winnings into the user's USDC ATA
     order: {
       leaderTradeId: null,
       side: fromApiSide(c.outcome),
@@ -656,6 +687,23 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   if (landed.err !== null) {
     await d.copy.failOrder(order.id);
     throw new AuthError(422, "TX_FAILED", "Transaction failed on-chain. Nothing was copied.");
+  }
+  // D-03 / B3-03: what actually moved, from the landed transaction's own token balances.
+  const moved = landed.payerUsdcOutBase;
+  if (moved === undefined || moved === null) {
+    d.log?.(`${kind} confirm: no token balances for ${signature.slice(0, 8)}…`);
+    throw new AuthError(502, "VERIFY_UNAVAILABLE", "We couldn't verify the transaction yet. Try again shortly.");
+  }
+  // Orders built before max_usdc_out existed: a copy's amount was its full limit; claims never pay out.
+  const limit =
+    order.maxUsdcOut !== null ? usdcToBase(order.maxUsdcOut) : kind === "copy" ? usdcToBase(order.amountUsdc) : 0n;
+  const tooLittle = kind === "claim" && -moved < usdcToBase(order.shares);
+  if (moved > limit || tooLittle) {
+    d.log?.(`${kind} confirm ${moved > limit ? "OVER_LIMIT" : "PAYOUT_TOO_LOW"} for ${signature.slice(0, 8)}…`);
+    await d.copy.failOrder(order.id);
+    throw moved > limit
+      ? new AuthError(422, "OVER_LIMIT", "This transaction moved more USDC than you approved. It was not recorded.")
+      : new AuthError(422, "PAYOUT_TOO_LOW", "This claim didn't pay your winnings to your wallet. It was not recorded.");
   }
   const result = await d.copy.completeOrder(order.id, session.uid, signature);
   if (result === "signature_used") throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");

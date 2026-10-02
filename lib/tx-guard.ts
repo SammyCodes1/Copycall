@@ -86,7 +86,52 @@ export type GuardContext = {
    * (+ the fee when it's on top) toward the limit, not just top-level transfers.
    */
   copyOutflow?: { model: FeeModel; depositBase: bigint; feeBase: bigint };
+  /**
+   * Copies only (required): what the user saw on the review screen. The
+   * primary_order_usdc arguments are decoded strictly (PRIMARY_ORDER_LAYOUT) and
+   * must match: same side, slippage no looser than the setting, and a minimum
+   * share count no lower than the displayed "Min. shares" (micro-shares).
+   */
+  copyTerms?: { side: "yes" | "no"; maxSlippageBps: number; minSharesBase: bigint };
+  /** Claims only (required): winning shares in base units. The claim must pay at least this into the user's USDC ATA. */
+  claimMinUsdcInBase?: bigint;
 };
+
+/**
+ * ASSUMED Anchor argument layout of primary_order_usdc (flagged for the Auditor;
+ * Panta doesn't publish its IDL). Borsh, little-endian, exactly 27 bytes:
+ *   [0..8)   discriminator  sha256("global:primary_order_usdc")[0..8]
+ *   [8..16)  amount         u64, USDC base units: the deposit (must equal the quote)
+ *   [16]     side           u8, 1 = YES, 0 = NO (anything else is refused)
+ *   [17..25) shares         u64, expected shares in micro-shares (must be > 0)
+ *   [25..27) max_slippage   u16, bps; the program fills at least
+ *                           shares * (10000 - max_slippage) / 10000
+ * Any other length or value fails closed: if the real layout differs, every copy
+ * build is refused here rather than signed on a guess.
+ */
+export const PRIMARY_ORDER_LAYOUT = { length: 27, amount: 8, side: 16, shares: 17, slippage: 25 } as const;
+
+export type PrimaryOrderArgs = { amount: bigint; side: "yes" | "no"; shares: bigint; slippageBps: number };
+
+/** Strict decode of primary_order_usdc data (discriminator already checked). Throws TxRejected. */
+export function decodePrimaryOrder(data: Buffer): PrimaryOrderArgs {
+  const L = PRIMARY_ORDER_LAYOUT;
+  if (data.length !== L.length) throw new TxRejected("ORDER_ARGS", "Order data has an unexpected layout");
+  const sideByte = data[L.side];
+  if (sideByte !== 0 && sideByte !== 1) throw new TxRejected("ORDER_ARGS", "Order side is unreadable");
+  return {
+    amount: data.readBigUInt64LE(L.amount),
+    side: sideByte === 1 ? "yes" : "no",
+    shares: data.readBigUInt64LE(L.shares),
+    slippageBps: data.readUInt16LE(L.slippage),
+  };
+}
+
+/** Least shares the order accepts on chain, per the assumed layout. */
+export function orderMinSharesBase(a: PrimaryOrderArgs): bigint {
+  if (a.slippageBps > 10_000) return 0n;
+  return (a.shares * BigInt(10_000 - a.slippageBps)) / 10_000n;
+}
 
 const u64 = (b: Buffer, at: number) => b.readBigUInt64LE(at);
 
@@ -137,19 +182,28 @@ export function checkInstructions(ixs: PantaInstruction[], ctx: GuardContext): v
   let cuPrice: bigint | null = null;
   let tokenOut = 0n;
   let expectedOut = 0n; // what the fee model says the order costs, from the decoded deposit
+  const main = ixs.find((ix) => ctx.pantaProgramIds.has(ix.programId))!;
   if (ctx.kind === "copy") {
-    // ASSUMPTION (flagged, like the discriminator above): primary_order_usdc's first
-    // Anchor argument is the USDC deposit as a u64 in base units. If it isn't, the
-    // deposit won't match the quote and every build fails closed here.
+    // Strict decode of primary_order_usdc (layout above). Fails closed.
     if (!ctx.copyOutflow) throw new TxRejected("NO_FEE_MODEL", "No fee model for this copy");
-    const main = ixs.find((ix) => ctx.pantaProgramIds.has(ix.programId))!;
-    const data = Buffer.from(main.data, "base64");
-    if (data.length < 16) throw new TxRejected("DEPOSIT_MISMATCH", "Order amount is missing");
-    const declared = u64(data, 8);
-    if (declared !== ctx.copyOutflow.depositBase)
+    if (!ctx.copyTerms) throw new TxRejected("NO_ORDER_TERMS", "No order terms for this copy");
+    const args = decodePrimaryOrder(Buffer.from(main.data, "base64"));
+    if (args.amount !== ctx.copyOutflow.depositBase || args.amount > ctx.maxUsdcOutBase)
       throw new TxRejected("DEPOSIT_MISMATCH", "Order amount doesn't match the quote");
-    tokenOut += declared; // the Panta instruction's own USDC deposit
-    expectedOut = outflowBase(ctx.copyOutflow.model, declared, ctx.copyOutflow.feeBase);
+    if (args.side !== ctx.copyTerms.side) throw new TxRejected("SIDE_MISMATCH", "Order is for the other side");
+    if (args.shares <= 0n) throw new TxRejected("ZERO_SHARES", "Order buys no shares");
+    if (args.slippageBps > ctx.copyTerms.maxSlippageBps)
+      throw new TxRejected("SLIPPAGE_TOO_HIGH", "Order allows more slippage than your setting");
+    if (orderMinSharesBase(args) < ctx.copyTerms.minSharesBase)
+      throw new TxRejected("MIN_SHARES_TOO_LOW", "Order accepts fewer shares than the review shows");
+    tokenOut += args.amount; // the Panta instruction's own USDC deposit
+    expectedOut = outflowBase(ctx.copyOutflow.model, args.amount, ctx.copyOutflow.feeBase);
+  } else {
+    // B3-03: the payout must go to the user's own USDC ATA, and that ATA must be in the claim.
+    if (ctx.claimMinUsdcInBase === undefined || ctx.claimMinUsdcInBase <= 0n)
+      throw new TxRejected("NO_CLAIM_AMOUNT", "No claim amount to check");
+    if (!main.accounts.some((a) => a.pubkey === associatedTokenAddress(ctx.feePayer, USDC_MINT) && a.isWritable))
+      throw new TxRejected("PAYOUT_ACCOUNT", "The claim doesn't pay into your USDC account");
   }
   for (const ix of ixs) {
     const data = Buffer.from(ix.data, "base64");
@@ -316,6 +370,8 @@ export type SimulationCheck = {
  *  - success
  *  - the user's USDC decrease <= maxUsdcDecreaseBase (copies: the max stake, fee and
  *    slippage inside it, in every fee model; claims: 0)
+ *  - claims: the user's own USDC ATA (associatedTokenAddress(wallet, USDC_MINT))
+ *    increases by at least minUsdcIncreaseBase (the winning shares, B3-03)
  *  - the USDC account keeps its owner, delegate and close authority (only the amount may change)
  *  - no other user-owned token account changes at all
  *  - SOL spent stays under MAX_SOL_SPEND_LAMPORTS
@@ -325,6 +381,7 @@ export async function simulateAndCheck(
   tx: VersionedTransaction,
   wallet: string,
   maxUsdcDecreaseBase: bigint,
+  minUsdcIncreaseBase = 0n,
 ): Promise<SimulationCheck> {
   const usdcAta = associatedTokenAddress(wallet, USDC_MINT);
   const [tokenAccounts, lamportsBefore] = await Promise.all([
@@ -359,6 +416,8 @@ export async function simulateAndCheck(
   const usdcDecrease = usdcBefore - usdcAfter;
   if (usdcDecrease > maxUsdcDecreaseBase)
     throw new TxRejected("OVER_STAKE", "Simulation spends more USDC than allowed");
+  if (minUsdcIncreaseBase > 0n && -usdcDecrease < minUsdcIncreaseBase)
+    throw new TxRejected("PAYOUT_TOO_LOW", "Simulation doesn't pay your winnings into your USDC account");
 
   // Every other token account the user owns must be byte-for-byte unchanged.
   for (let i = 2; i < addresses.length; i++) {

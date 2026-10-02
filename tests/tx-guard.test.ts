@@ -34,6 +34,12 @@ const primaryMarket = (marketsJson as { marketId: string; phase: string }[]).fin
   (m) => m.phase === "primary",
 )!.marketId;
 const PROGRAMS = new Set([MOCK_PROGRAM_ID]);
+/** Review terms matching a build at 2% slippage: the displayed min is the on-chain min. */
+const termsFor = (b: BuildResponse): NonNullable<GuardContext["copyTerms"]> => ({
+  side: "yes",
+  maxSlippageBps: 200,
+  minSharesBase: (usdcToBase(b.expectedShares) * 9_800n) / 10_000n,
+});
 const randomKey = () => bs58.encode(randomBytes(32));
 
 let wallet: string;
@@ -52,6 +58,7 @@ beforeAll(async () => {
     pantaProgramIds: PROGRAMS,
     maxUsdcOutBase: copyUsdcLimitBase(usdcToBase("5.00")), // hard total: the fee is inside the 5.00
     copyOutflow: { model: "inclusive", depositBase: usdcToBase("5.00"), feeBase: usdcToBase(q.feeUsdc) },
+    copyTerms: termsFor(build),
   };
   feeBase = usdcToBase(q.feeUsdc);
 });
@@ -214,7 +221,7 @@ describe("simulation checks", () => {
       const q = await panta.quotePrimaryOrder({ wallet, marketId: primaryMarket, side: "yes", amountUsdc: "5.00" });
       const b = await panta.buildPrimaryOrder({ quoteId: q.quoteId, wallet, maxSlippageBps: 200 });
       const f = usdcToBase(q.feeUsdc);
-      const onTop = { ...ctx, copyOutflow: { model: "on_top" as const, depositBase: usdcToBase("5.00"), feeBase: f } };
+      const onTop = { ...ctx, copyOutflow: { model: "on_top" as const, depositBase: usdcToBase("5.00"), feeBase: f }, copyTerms: termsFor(b) };
       expect(reject(b.instructions, onTop)).toBe("OVER_STAKE");
       // Even if the fee were charged inside the program (no top-level transfer), the model counts it.
       const withoutFeeIx = b.instructions.filter((i) => i.programId !== TOKEN_PROGRAM_ID);
@@ -227,7 +234,7 @@ describe("simulation checks", () => {
       const b2 = await panta.buildPrimaryOrder({ quoteId: q2.quoteId, wallet, maxSlippageBps: 200 });
       const f2 = usdcToBase(q2.feeUsdc);
       expect(usdcToBase("4.90") + f2).toBeLessThanOrEqual(usdcToBase("5.00"));
-      const ok = { ...ctx, copyOutflow: { model: "on_top" as const, depositBase: usdcToBase("4.90"), feeBase: f2 } };
+      const ok = { ...ctx, copyOutflow: { model: "on_top" as const, depositBase: usdcToBase("4.90"), feeBase: f2 }, copyTerms: termsFor(b2) };
       expect(reject(b2.instructions, ok)).toBe("ACCEPTED");
       const tx2 = assembleTransaction(b2.instructions, b2.recentBlockhash, wallet);
       const r = await simulateAndCheck(chain, tx2, wallet, ctx.maxUsdcOutBase);
