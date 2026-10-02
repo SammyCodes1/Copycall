@@ -51,6 +51,8 @@ describe("POST /api/telegram/webhook", () => {
   });
 
   it("accepts the right header; after a valid secret malformed bodies are dropped with 200 (B2-06)", async () => {
+    // H-07: no live bot token reaches the tests (tests/helpers/setup.ts), so nothing calls Telegram.
+    expect(process.env.TELEGRAM_BOT_TOKEN).toBeUndefined();
     const secret = randomBytes(32).toString("base64url");
     process.env.TELEGRAM_WEBHOOK_SECRET = secret;
     const bad = new Request(`${ORIGIN}/api/telegram/webhook`, {
