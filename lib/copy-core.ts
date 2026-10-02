@@ -976,7 +976,10 @@ function signsOrder(order: PendingOrder, signature: string, wallet: string): boo
  * ahead of ours. Over-estimating only delays a provably-dead failure; it can never make one
  * early. An RPC error stores null: such an order is never failed as expired (unknown).
  */
-export const LVBH_BOUND_MARGIN = 150;
+// M-01: 1500, not 150: our build-time height read may lag Panta's node by far more than 150
+// blocks; a bound below the real lastValidBlockHeight would let a lagging "invalid" answer fail
+// an order that can still land.
+export const LVBH_BOUND_MARGIN = 1500;
 async function lastValidHeightOrBound(d: FlowDeps, fromPanta: number | undefined): Promise<number | null> {
   if (typeof fromPanta === "number" && Number.isSafeInteger(fromPanta)) return fromPanta;
   try {

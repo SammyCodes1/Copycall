@@ -3542,6 +3542,34 @@ describe("L-01: 'provably past' needs isBlockhashValid=false AND a height above 
     expect(s3.orders.get(b3.orderId)?.lastValidBlockHeight).toBe(LVBH);
   });
 
+  it("M-01: the fallback margin is pinned at 1500, and the auditor's lagging build-read PoF stays pending", async () => {
+    expect(LVBH_BOUND_MARGIN).toBe(1500);
+    const u = await signedInUser();
+    const noLvbh = {
+      ...deps().panta,
+      buildPrimaryOrder: async (...a: Parameters<typeof panta.buildPrimaryOrder>) => ({
+        ...(await panta.buildPrimaryOrder(...a)),
+        lastValidBlockHeight: undefined,
+      }),
+    };
+    // PoF: our node read 999_600 at build (lagging); Panta's blockhash really lives to 1_000_000.
+    const state = createCopyMemoryState();
+    const { b } = await quoteAndBuild(deps({ state, panta: noLvbh, chain: { ...chain, currentBlockHeight: async () => 999_600 } }), u);
+    expect(state.orders.get(b.orderId)?.lastValidBlockHeight).toBe(999_600 + 150 + 1500);
+    // Later: a lagging "invalid" answer and a healthy height of 999_950 (blockhash still valid).
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64")).signatures[0]);
+    const lag = late(state, invalidAt(999_950));
+    expect(await provablyDead(lag, state.orders.get(b.orderId)!, sig)).toBe(false);
+    const e = await confirmOrder(lag, post("/c", { orderId: b.orderId, signature: sig }, u), "copy").catch((x) => x);
+    expect(e).toMatchObject({ code: "NOT_BROADCAST" });
+    expect(String(e.message)).not.toMatch(nothingSpent);
+    expect((await sweepBroadcastOrders(late(state, invalidAt(999_950), 17))).abandoned).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    // Only past the (over-estimated) bound is it provably dead.
+    expect(await provablyDead(late(state, invalidAt(999_600 + 1650 + 1)), state.orders.get(b.orderId)!, sig)).toBe(true);
+  });
+
   describe("the real adapter: one connection, one commitment, minContextSlot", () => {
     const setup = async () => {
       process.env.SOLANA_RPC_URL ??= "https://rpc.example/";
