@@ -9,6 +9,7 @@ import { supabaseCopyStore } from "./copy-store-supabase";
 import { getUserDeps } from "./data";
 import { isMockMode, readEnv } from "./env";
 import { FeeConfigError, feeConfigFromEnv, type FeeConfig } from "./fee-config";
+import { StakeCapError, stakeCapFromEnv } from "./stake-cap";
 import { MOCK_PROGRAM_ID, getSharedMockChain } from "./mock/chain-mock";
 import { getSharedMemoryCopyStore } from "./mock/copy-store-memory";
 import * as panta from "./panta";
@@ -53,6 +54,19 @@ export function feeConfig(): FeeConfig {
   }
 }
 
+/** MAX_STAKE_USDC in base units, or null (missing/invalid in real mode: copies fail closed). */
+export function stakeCapOrNull(): bigint | null {
+  try {
+    return stakeCapFromEnv(readEnv(), isMockMode());
+  } catch (err) {
+    if (err instanceof StakeCapError) {
+      console.error(`[copy] ${err.message}`); // names the variable, never its value
+      return null;
+    }
+    throw err;
+  }
+}
+
 export function getFlowDeps(): FlowDeps {
   const mock = isMockMode();
   return {
@@ -71,6 +85,7 @@ export function getFlowDeps(): FlowDeps {
       const f = feeConfigOrNull();
       return { feeModel: f?.model ?? null, feeCapBps: f?.feeCapBps ?? null };
     })(),
+    maxStakeCapBase: stakeCapOrNull(),
     mock,
     log: (m) => console.info(`[copy] ${m}`),
     alert: (m) => console.error(`[ALERT] ${m}`),

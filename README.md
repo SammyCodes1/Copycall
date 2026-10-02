@@ -74,6 +74,7 @@ values, which the app does not currently read (the browser never queries Supabas
 | `MIN_RESOLVED_CALLS` | Default 5 |
 | `CRON_SECRET` | >= 16 chars (use 32+). Cron routes need `Authorization: Bearer <CRON_SECRET>`; query-string secrets are refused |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` | Both needed for Telegram. If either is missing, alerts are written to the server log instead |
+| `MAX_STAKE_USDC` | Launch cap per copy in USDC, fee included (plain decimal, > 0, ≤ 6 dp, ≤ 1000). **Required in real mode**: missing, malformed or 0 refuses copies (503), never "no limit". Mock default 5. Enforced at quote, build, simulation and confirm; Settings shows it and can't save a stake above it. The DB bounds every order's limit and copy amount at 1000 (migration 0014) |
 | `PANTA_PROGRAM_IDS` | Comma-separated Panta program ids for the transaction guard. Required in real mode: copy and claim fail closed (503) without it |
 
 ## Batch 2: sync, leaderboard, follow, alerts
@@ -177,9 +178,9 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    --amount 5.00 --wallet <pubkey> [--slippage-bps 200]`. It runs the app's quote logic, one build, assembles the
    exact transaction, `simulateTransaction` with `sigVerify: false`, and the full guard, then prints the fee
    model, the decoded order args, each Panta account slot against `PANTA_ACCOUNT_ROLES`, the inner programs and
-   the simulated USDC delta. `--amount` is at most 5. Exit 0 = every check passed, 3 = a check failed (named),
+   the simulated USDC delta. `--amount` is at most 5 and at most `MAX_STAKE_USDC`. Exit 0 = every check passed, 3 = a check failed (named),
    1 = usage/config error. The Panta key and every part of `SOLANA_RPC_URL` are redacted from all output.
-   Needs `PANTA_API_KEY`, `PANTA_FEE_MODEL`, `PANTA_PROGRAM_IDS` and `SOLANA_RPC_URL`; in mock: `MOCK_PANTA=true`.
+   Needs `PANTA_API_KEY`, `PANTA_FEE_MODEL`, `MAX_STAKE_USDC`, `PANTA_PROGRAM_IDS` and `SOLANA_RPC_URL`; in mock: `MOCK_PANTA=true`.
 
    **Order arguments** are decoded strictly against an *assumed* layout (`PRIMARY_ORDER_LAYOUT` in
    `lib/tx-guard.ts`, 27 bytes: discriminator, amount u64, side u8, shares u64, max slippage u16 bps; Panta

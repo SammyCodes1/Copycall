@@ -27,6 +27,7 @@ const EnvSchema = z.object({
   PANTA_PROGRAM_IDS: optionalString,
   PANTA_FEE_MODEL: optionalString,
   PANTA_FEE_CAP_BPS: optionalString,
+  MAX_STAKE_USDC: optionalString,
   MOCK_PANTA_FEE_MODEL: optionalString,
   MIN_RESOLVED_CALLS: optionalString,
   MOCK_PANTA: optionalString,

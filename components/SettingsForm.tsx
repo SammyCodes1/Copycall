@@ -15,7 +15,8 @@ const field =
   "num h-11 w-full rounded-[var(--radius-control)] border border-control bg-ink-950/60 px-3 text-base text-fg " +
   "placeholder:text-fg-subtle focus-visible:border-brand-300 focus-visible:outline-none aria-[invalid=true]:border-coral-400";
 
-export function SettingsForm({ initial }: { initial: Settings }) {
+/** capUsdc: the server's launch cap per copy (MAX_STAKE_USDC); null = copying not configured. */
+export function SettingsForm({ initial, capUsdc }: { initial: Settings; capUsdc: string | null }) {
   const router = useRouter();
   const id = useId();
   const [stake, setStake] = useState(initial.maxStakeUsdc);
@@ -27,7 +28,8 @@ export function SettingsForm({ initial }: { initial: Settings }) {
   const pct = Number(slippagePct);
   const slippageInvalid = !(slippagePct.trim() !== "" && Number.isFinite(pct) && pct >= 0 && pct <= 5);
   const stakeNum = Number(stake);
-  const stakeInvalid = !(/^\d{1,4}(\.\d{1,2})?$/.test(stake.trim()) && stakeNum >= 1 && stakeNum <= 1000);
+  const maxStake = capUsdc !== null ? Math.min(1000, Number(capUsdc)) : 1000;
+  const stakeInvalid = !(/^\d{1,4}(\.\d{1,2})?$/.test(stake.trim()) && stakeNum >= 1 && stakeNum <= maxStake);
 
   function save(e: React.FormEvent) {
     e.preventDefault();
@@ -77,7 +79,9 @@ export function SettingsForm({ initial }: { initial: Settings }) {
             </span>
           </div>
           <p id={`${id}-stake-help`} className="mt-1.5 text-xs leading-5 text-fg-subtle">
-            1–1000 USDC. Every copy is capped at this, whatever the leader bought.
+            {capUsdc !== null
+              ? `1–${capUsdc} USDC (this server's limit per copy). Every copy is capped at this, whatever the leader bought.`
+              : "1–1000 USDC. Every copy is capped at this, whatever the leader bought."}
           </p>
         </div>
         <div>

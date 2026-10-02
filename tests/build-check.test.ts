@@ -63,6 +63,15 @@ describe("runBuildCheck", () => {
     expect(r.checks.map((c) => c.name)).toEqual(["quote", "build", "static guard", "simulation guard"]);
   });
 
+  it("refuses an amount above the launch cap passed in", async () => {
+    const r = await runBuildCheck(opts({ amountUsdc: "5.00", maxStakeCapBase: 2_000_000n }), {
+      quote: panta.quotePrimaryOrder,
+      build: panta.buildPrimaryOrder,
+      chain: readOnlyChain(),
+    });
+    expect(r.failed).toBe("input: STAKE_ABOVE_CAP");
+  });
+
   it("refuses amounts above 5, malformed amounts and zero", () => {
     for (const v of ["5.01", "6", "1e1", "0x5", "-1", "1.001", "0", "0.00", ""]) expect(() => parseCheckAmount(v)).toThrow();
     expect(parseCheckAmount("5")).toBe(5_000_000n);
@@ -129,6 +138,7 @@ function run(env: Record<string, string | undefined>, args: string[] = []) {
     "PANTA_BASE_URL",
     "PANTA_PROGRAM_IDS",
     "SOLANA_RPC_URL",
+    "MAX_STAKE_USDC",
   ])
     delete base[k];
   return new Promise<{ code: number; out: string }>((resolve) => {
@@ -176,6 +186,7 @@ describe("panta-build-check script", () => {
       PANTA_API_KEY: pantaKey,
       PANTA_BASE_URL: "https://evil.example/api/v1", // refused by lib/panta.ts before any request
       PANTA_FEE_MODEL: "inclusive",
+      MAX_STAKE_USDC: "5",
       PANTA_PROGRAM_IDS: Keypair.generate().publicKey.toBase58(),
       SOLANA_RPC_URL: `https://user:pw0rd123@rpc.example/${rpcPathKey}/?api-key=${wallet}`,
     };
@@ -188,13 +199,22 @@ describe("panta-build-check script", () => {
 
   it("real mode requires the wallet, program ids, RPC URL and a fee pin", async () => {
     const m = Keypair.generate().publicKey.toBase58();
-    const base = { PANTA_FEE_MODEL: "inclusive", PANTA_PROGRAM_IDS: m, SOLANA_RPC_URL: "https://rpc.example/" };
+    const base = { PANTA_FEE_MODEL: "inclusive", MAX_STAKE_USDC: "5", PANTA_PROGRAM_IDS: m, SOLANA_RPC_URL: "https://rpc.example/" };
     expect((await run(base, ["--market", m])).code).toBe(1); // no wallet
     const w = Keypair.generate().publicKey.toBase58();
     expect((await run({ ...base, PANTA_FEE_MODEL: "" }, ["--market", m, "--wallet", w])).code).toBe(1);
     expect((await run({ ...base, PANTA_PROGRAM_IDS: "" }, ["--market", m, "--wallet", w])).code).toBe(1);
     expect((await run({ ...base, SOLANA_RPC_URL: "" }, ["--market", m, "--wallet", w])).code).toBe(1);
+    // The launch cap is required in real mode and bounds --amount.
+    expect((await run({ ...base, MAX_STAKE_USDC: "" }, ["--market", m, "--wallet", w])).code).toBe(1);
+    expect((await run({ ...base, MAX_STAKE_USDC: "0" }, ["--market", m, "--wallet", w])).code).toBe(1);
   }, 120_000);
+
+  it("--amount above MAX_STAKE_USDC is refused (mock, cap 2)", async () => {
+    const r = await run({ MOCK_PANTA: "true", MAX_STAKE_USDC: "2" }, ["--amount", "3.00"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("MAX_STAKE_USDC");
+  }, 60_000);
 
   it("refuses a Panta key too short to redact", async () => {
     const r = await run({ MOCK_PANTA: "true", PANTA_API_KEY: "Zq9x7" });

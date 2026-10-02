@@ -12,7 +12,7 @@ beforeAll(async () => {
   leader = (await getDataStore().leaderboard(5, 1))[0].wallet;
 }, 20_000);
 
-const valid = { maxStakeUsdc: "12.50", slippageBps: 300, alertsEnabled: false };
+const valid = { maxStakeUsdc: "4.50", slippageBps: 300, alertsEnabled: false }; // under the mock launch cap (5)
 
 describe("POST/DELETE /api/follow", () => {
   it("requires a session", async () => {
@@ -76,7 +76,7 @@ describe("GET/PUT /api/settings", () => {
     const u = await signedInUser();
     const res = await putSettingsRoute(apiRequest("PUT", "/api/settings", { body: valid, cookie: u.cookie }));
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ maxStakeUsdc: "12.50", slippageBps: 300, alertsEnabled: false });
+    expect(await res.json()).toMatchObject({ maxStakeUsdc: "4.50", slippageBps: 300, alertsEnabled: false });
   });
 
   it("rejects slippage above 500 bps (5%) even if the client sends it", async () => {
@@ -105,5 +105,24 @@ describe("GET/PUT /api/settings", () => {
     expect((await put({ ...valid, telegramChatId: 1 })).status).toBe(400);
     expect((await put(valid, { origin: "https://evil.example" })).status).toBe(403);
     expect((await putSettingsRoute(apiRequest("PUT", "/api/settings", { body: valid }))).status).toBe(401);
+  });
+
+  it("launch cap: a stake above MAX_STAKE_USDC can't be saved (mock default 5)", async () => {
+    const u = await signedInUser();
+    const put = (maxStakeUsdc: string) =>
+      putSettingsRoute(apiRequest("PUT", "/api/settings", { body: { ...valid, maxStakeUsdc }, cookie: u.cookie }));
+    for (const v of ["5.01", "12.50", "1000"]) {
+      const res = await put(v);
+      expect(res.status, v).toBe(400);
+      expect((await res.json()).message).toContain("5.00 USDC");
+    }
+    expect((await put("5")).status).toBe(200);
+    process.env.MAX_STAKE_USDC = "20";
+    try {
+      expect((await put("12.50")).status).toBe(200);
+      expect((await put("20.01")).status).toBe(400);
+    } finally {
+      delete process.env.MAX_STAKE_USDC;
+    }
   });
 });

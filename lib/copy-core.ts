@@ -117,6 +117,12 @@ export type FlowDeps = UserDeps & {
   feeModel: PinnedFeeModel | null;
   /** Fee sanity cap as bps of the stake (PANTA_FEE_CAP_BPS, default 500). Quotes and builds above it are refused. */
   feeCapBps: number | null;
+  /**
+   * Launch cap: MAX_STAKE_USDC in base units (lib/stake-cap.ts). No copy may move more,
+   * whatever the saved max stake. null = missing/invalid in real mode: copies fail closed
+   * (quote/build 503; a copy confirm stays retryable).
+   */
+  maxStakeCapBase: bigint | null;
   mock: boolean;
   nowMs?: () => number;
   confirmTimeoutMs?: number;
@@ -231,6 +237,20 @@ function feePin(d: FlowDeps): { model: PinnedFeeModel; capBps: number } {
   return { model: d.feeModel, capBps: d.feeCapBps };
 }
 
+/** Launch cap, required wherever a copy is quoted, built or confirmed. */
+function stakeCap(d: FlowDeps): bigint {
+  if (d.maxStakeCapBase === null || d.maxStakeCapBase <= 0n)
+    throw new AuthError(503, "NOT_CONFIGURED", "Copying isn't configured on this server yet");
+  return d.maxStakeCapBase;
+}
+function stakeAboveCap(cap: bigint): AuthError {
+  return new AuthError(
+    422,
+    "STAKE_ABOVE_CAP",
+    `Your max stake is above this server's limit of ${usdcExact(cap)} USDC per copy. Lower it in Settings. Nothing was sent.`,
+  );
+}
+
 /** D-05: alert once per process and (pin, reading) when Panta's quotes don't match the pinned fee model. */
 const feeModelAlerted = new Set<string>();
 function alertFeeModel(d: FlowDeps, code: string, detected: string | undefined) {
@@ -276,8 +296,10 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
   const pin = feePin(d);
   const session = await requireSession(d, request);
   await rateLimit(d, "copyquote", session.uid, QUOTE_RATE_LIMIT);
+  const cap = stakeCap(d);
   const { trade, market } = await requireCopyable(d, tradeId);
   const settings = await settingsFor(d, session.uid);
+  if (usdcToBase(settings.maxStakeUsdc) > cap) throw stakeAboveCap(cap);
   const now = nowSec(d);
 
   const cacheKey = `quote:${session.uid}:${trade.id}`;
@@ -465,6 +487,14 @@ async function assembleAndStore(
     if (err instanceof TxRejected) d.log?.(`${a.kind} build rejected: ${err.code}`);
     asRejection(err);
   }
+  if (a.kind === "copy") {
+    // Launch cap at the simulation: the limit we simulated against and the measured debit.
+    const cap = stakeCap(d);
+    if (a.maxUsdcOutBase > cap || sim.usdcDecrease > cap) {
+      d.log?.(`copy build rejected: OVER_CAP`);
+      throw rejected("the simulation is above the launch cap");
+    }
+  }
   const messageBytes = tx.message.serialize();
   const now = nowSec(d);
   const order = await d.copy.createPendingOrder({
@@ -518,6 +548,8 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
     throw quoteExpired("Your settings changed. Refresh the quote.");
   }
 
+  const cap = stakeCap(d);
+  if (usdcToBase(settings.maxStakeUsdc) > cap) throw stakeAboveCap(cap);
   let b: BuildResponse;
   try {
     b = await d.panta.buildPrimaryOrder({
@@ -539,6 +571,7 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
   if (maxOut !== usdcToBase(tok.maxUsdcOut) || outflow > maxOut) {
     throw rejected("the quote doesn't fit your max stake");
   }
+  if (maxOut > cap || outflow > cap) throw rejected("the order is above the launch cap");
   if (fee > feeCapBase(stake, pin.capBps)) throw rejected("the fee is above the cap");
   if (
     b.wallet !== session.w ||
@@ -891,8 +924,16 @@ async function verifyAndRecord(
     throw verifyUnavailable(order.id, signature);
   }
   // Orders built before max_usdc_out existed: a copy's amount was its full limit; claims never pay out.
-  const limit =
+  let limit =
     order.maxUsdcOut !== null ? usdcToBase(order.maxUsdcOut) : kind === "copy" ? usdcToBase(order.amountUsdc) : 0n;
+  if (kind === "copy") {
+    // Launch cap at confirm. Unknown cap (misconfigured) stays retryable, never "no limit".
+    if (d.maxStakeCapBase === null || d.maxStakeCapBase <= 0n) {
+      d.log?.(`copy confirm: MAX_STAKE_USDC not configured; ${signature.slice(0, 8)}… stays pending`);
+      throw verifyUnavailable(order.id, signature);
+    }
+    if (d.maxStakeCapBase < limit) limit = d.maxStakeCapBase;
+  }
   const tooLittle = kind === "claim" && -moved < usdcToBase(order.shares);
   if (moved > limit || tooLittle) {
     d.log?.(`${kind} confirm ${moved > limit ? "OVER_LIMIT" : "PAYOUT_TOO_LOW"} for ${signature.slice(0, 8)}…`);

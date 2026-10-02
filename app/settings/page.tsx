@@ -9,6 +9,8 @@ import { HitRate } from "@/components/ui/Badge";
 import { getSession } from "@/lib/auth";
 import { ensureMockData, getDataStore } from "@/lib/data";
 import { displayNowSec } from "@/lib/queries";
+import { stakeCapOrNull } from "@/lib/flow";
+import { usdcExact } from "@/lib/copy-math";
 import { isTelegramConfigured } from "@/lib/telegram";
 
 export const metadata: Metadata = { title: "Settings · Copycall" };
@@ -41,6 +43,7 @@ export default async function SettingsPage() {
     ),
   );
   const nowSec = displayNowSec();
+  const cap = stakeCapOrNull(); // the launch cap (MAX_STAKE_USDC); the server enforces it on every copy
 
   return (
     <div className="mx-auto max-w-[48rem] px-4 pb-16 sm:px-6">
@@ -58,7 +61,7 @@ export default async function SettingsPage() {
         <h2 id="limits-title" className="mb-5 font-display text-2xl">
           Copy limits
         </h2>
-        {settings && <SettingsForm initial={settings} />}
+        {settings && <SettingsForm initial={settings} capUsdc={cap === null ? null : usdcExact(cap)} />}
       </section>
 
       <section aria-labelledby="telegram-title" className="card mt-6 px-4 py-5 sm:px-6 sm:py-6">

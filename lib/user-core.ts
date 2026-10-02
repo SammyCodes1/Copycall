@@ -7,6 +7,8 @@
  * user_id always comes from the session, never from the request.
  * Dependencies are injected so this is unit-testable.
  */
+import { usdcToBase } from "./solana-constants";
+import { usdcExact } from "./copy-math";
 import { AuthError, assertSameOrigin, readJsonBody, resolveSession, type AuthDeps } from "./auth-core";
 import type { DataStore } from "./data-store";
 import { FollowRequestSchema, SettingsRequestSchema } from "./schemas";
@@ -81,12 +83,15 @@ export async function readSettings(deps: UserDeps, request: Request) {
 }
 
 /** PUT /api/settings { maxStakeUsdc, slippageBps, alertsEnabled } */
-export async function writeSettings(deps: UserDeps, request: Request) {
+export async function writeSettings(deps: UserDeps, request: Request, stakeCapBase: bigint | null = null) {
   const session = await requireWrite(deps, request, "settings", SETTINGS_RATE_LIMIT);
   const parsed = SettingsRequestSchema.safeParse(await readJsonBody(request));
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw new AuthError(400, "INVALID_SETTINGS", issue?.message ?? "Invalid settings");
   }
+  // Launch cap (MAX_STAKE_USDC): a stake above it can't be saved. Copies enforce it again.
+  if (stakeCapBase !== null && usdcToBase(parsed.data.maxStakeUsdc) > stakeCapBase)
+    throw new AuthError(400, "INVALID_SETTINGS", `Max stake can't be above ${usdcExact(stakeCapBase)} USDC on this server`);
   return deps.data.updateSettings(session.uid, parsed.data);
 }

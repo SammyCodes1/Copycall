@@ -71,6 +71,7 @@ function deps(over: Partial<FlowDeps> & { state?: CopyMemoryState } = {}): FlowD
     pantaProgramIds: new Set([MOCK_PROGRAM_ID]),
     feeModel: "inclusive",
     feeCapBps: 500,
+    maxStakeCapBase: 1_000_000_000n, // 1000 USDC here; launch-cap tests set their own
     mock: true,
     confirmTimeoutMs: 0,
     ...over,
@@ -117,7 +118,10 @@ describe("quote: the link can't change amount, side or market", () => {
     await getDataStore().updateSettings(u.userId, { maxStakeUsdc: "7.00", slippageBps: 150, alertsEnabled: true });
     const flip = trade.side === "YES" ? "NO" : "YES";
     const url = `/api/copy/${trade.id}/quote?amount=999&amountUsdc=999&side=${flip}&marketId=x&slippageBps=5000`;
-    const res = await quoteRoute(get(url, u), { params: Promise.resolve({ tradeId: trade.id }) });
+    process.env.MAX_STAKE_USDC = "20"; // above the saved 7.00 (mock default cap is 5)
+    const res = await quoteRoute(get(url, u), { params: Promise.resolve({ tradeId: trade.id }) }).finally(
+      () => delete process.env.MAX_STAKE_USDC,
+    );
     expect(res.status).toBe(200);
     const q = await res.json();
     expect(q).toMatchObject({ side: trade.side, marketId: trade.marketId, amountUsdc: "7.00", slippageBps: 150 });
@@ -1810,5 +1814,104 @@ describe("F-04: the shipped client re-checks by signature after a lost response,
     n = 0;
     await expect(pollConfirm(fail(new FlowError("ERROR", "x", undefined, 500)), "o", {}, async () => {}, sig)).rejects.toMatchObject({ code: "PENDING" });
     expect(n).toBe(CONFIRM_POLLS + 1);
+  });
+});
+
+describe("Launch cap (MAX_STAKE_USDC) is enforced at quote, build, simulation and confirm", () => {
+  const CAP5 = 5_000_000n;
+  /** Drop the cached quote so each case gets a fresh single-use quote token. */
+  const d0Cache = async (state: CopyMemoryState, u: User) => createMemoryCopyStore(state).cacheDelete(`quote:${u.userId}:${trade.id}`);
+  const stakeOf = async (u: User, maxStakeUsdc: string) =>
+    getDataStore().updateSettings(u.userId, { maxStakeUsdc, slippageBps: 200, alertsEnabled: true });
+
+  it("quote: a saved stake above the cap is refused; a missing cap is 503 (never no-limit)", async () => {
+    const u = await signedInUser();
+    await stakeOf(u, "7.00");
+    expect(await code(quoteCopy(deps({ maxStakeCapBase: CAP5 }), get("/q", u), trade.id))).toBe("STAKE_ABOVE_CAP");
+    expect(await code(quoteCopy(deps({ maxStakeCapBase: null }), get("/q", u), trade.id))).toBe("NOT_CONFIGURED");
+    expect(await code(quoteCopy(deps({ maxStakeCapBase: 0n }), get("/q", u), trade.id))).toBe("NOT_CONFIGURED");
+    await stakeOf(u, "5.00");
+    expect(await code(quoteCopy(deps({ maxStakeCapBase: CAP5 }), get("/q", u), trade.id))).toBe("OK");
+  });
+
+  it("build: a cap lowered (or removed) after the quote refuses the build before Panta is asked", async () => {
+    const u = await signedInUser();
+    await stakeOf(u, "7.00");
+    const state = createCopyMemoryState();
+    let builds = 0;
+    const counting = { ...deps().panta, buildPrimaryOrder: async (r: Parameters<typeof panta.buildPrimaryOrder>[0]) => (builds++, panta.buildPrimaryOrder(r)) };
+    for (const cap of [CAP5, null]) {
+      await d0Cache(state, u);
+      const q = await quoteCopy(deps({ state }), get("/q", u), trade.id);
+      const d = deps({ state, maxStakeCapBase: cap, panta: counting });
+      expect(await code(buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id))).toBe(cap ? "STAKE_ABOVE_CAP" : "NOT_CONFIGURED");
+    }
+    expect(builds).toBe(0);
+    expect(state.orders.size).toBe(0);
+  });
+
+  it("simulation: at the cap, a simulated debit 1 base unit over is refused", async () => {
+    const u = await signedInUser();
+    await stakeOf(u, "5.00");
+    const chain = getSharedMockChain();
+    const ata = associatedTokenAddress(u.wallet, USDC_MINT);
+    const logs: string[] = [];
+    const d = deps({
+      maxStakeCapBase: CAP5,
+      log: (m: string) => logs.push(m),
+      chain: {
+        ...chain,
+        simulate: async (tx, a) => {
+          const r = await chain.simulate(tx, a);
+          return {
+            ...r,
+            accounts: r.accounts.map((x, i) => {
+              if (!x || a[i] !== ata) return x;
+              const data = Buffer.from(x.data);
+              data.writeBigUInt64LE(data.readBigUInt64LE(64) - 1n, 64);
+              return { ...x, data };
+            }),
+          };
+        },
+      },
+    });
+    const q = await quoteCopy(d, get("/q", u), trade.id);
+    expect(await code(buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id))).toBe("TX_REJECTED");
+    expect(logs.join("\n")).toContain("OVER_STAKE");
+  });
+
+  it("confirm: an order built under a higher cap is refused if it moved more than the current cap", async () => {
+    const u = await signedInUser();
+    await stakeOf(u, "7.00");
+    const state = createCopyMemoryState();
+    const { b } = await quoteAndBuild(deps({ state }), u); // cap 1000 at build
+    const d = deps({ state, maxStakeCapBase: CAP5 });
+    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await code(confirmOrder(d, req, "copy"))).toBe("OVER_LIMIT");
+    expect(state.copies.size).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+  });
+
+  it("confirm: a missing cap keeps the copy pending and retryable, never unlimited", async () => {
+    const u = await signedInUser();
+    await stakeOf(u, "5.00");
+    const state = createCopyMemoryState();
+    const { b } = await quoteAndBuild(deps({ state }), u);
+    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await code(confirmOrder(deps({ state, maxStakeCapBase: null }), req, "copy"))).toBe("VERIFY_UNAVAILABLE");
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    expect(state.copies.size).toBe(0);
+    // Once configured, the same signature records it.
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(sign(b.transaction, u.secretKey), "base64")).signatures[0]);
+    expect(await confirmOrder(deps({ state, maxStakeCapBase: CAP5 }), post("/c", { orderId: b.orderId, signature: sig }, u), "copy")).toMatchObject({ status: "confirmed" });
+  });
+
+  it("claims don't depend on the launch cap", async () => {
+    const u = await signedInUser();
+    const win = (await myPositions(deps(), get("/p", u))).positions.find((p) => p.status === "claimable")!;
+    const d = deps({ maxStakeCapBase: null });
+    const b = await buildClaimTx(d, post("/cb", { marketId: win.marketId }, u));
+    const req = post("/cc", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
+    expect(await confirmOrder(d, req, "claim")).toMatchObject({ status: "confirmed" });
   });
 });

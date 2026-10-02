@@ -103,5 +103,13 @@ describe("E-05: legacy pending copy orders across migration 0008", () => {
     await expect(db.query(`update public.pending_orders set amount_usdc = 6 where id = $1`, [b])).rejects.toThrow(
       /pending_orders_copy_within_cap/,
     );
+    // Launch cap ceiling (0014): no limit or copy amount above 1000 USDC (the highest valid MAX_STAKE_USDC).
+    await expect(db.query(`update public.pending_orders set max_usdc_out = 1000.000001 where id = $1`, [b])).rejects.toThrow(
+      /pending_orders_max_usdc_out_ceiling/,
+    );
+    await expect(db.query(`update public.pending_orders set max_usdc_out = 2000, amount_usdc = 1500 where id = $1`, [b])).rejects.toThrow(
+      /ceiling/,
+    );
+    await db.query(`update public.pending_orders set max_usdc_out = 1000 where id = $1`, [b]);
   });
 });

@@ -17,7 +17,8 @@
  * Safety:
  * - It NEVER signs or broadcasts. It has no private key (only --wallet, a public key) and
  *   never calls a send path. A Panta build is not an order until it's signed and sent.
- * - --amount is at most 5 USDC (plain decimal, <= 2 dp), whatever the deployment's cap.
+ * - --amount is at most 5 USDC (plain decimal, <= 2 dp) and at most MAX_STAKE_USDC (required in
+ *   real mode, like the app).
  * - PANTA_API_KEY is read only from the env by lib/panta.ts. SOLANA_RPC_URL (which usually
  *   embeds an API key) is read only by lib/solana.ts. Every output line passes through
  *   redact(), which removes the Panta key, the full RPC URL, its credentials, query values
@@ -108,12 +109,13 @@ async function load(rel) {
 
 try {
   const a = args();
-  const [check, panta, env, feeConfig, constants] = await Promise.all([
+  const [check, panta, env, feeConfig, constants, stakeCap] = await Promise.all([
     load("lib/build-check.ts"),
     load("lib/panta.ts"),
     load("lib/env.ts"),
     load("lib/fee-config.ts"),
     load("lib/solana-constants.ts"),
+    load("lib/stake-cap.ts"),
   ]);
   const { PublicKey } = await import("@solana/web3.js");
   const isPubkey = (v) => {
@@ -152,6 +154,14 @@ try {
     fail(e.message); // names the variable, never its value
   }
 
+  let capBase;
+  try {
+    capBase = stakeCap.stakeCapFromEnv(process.env, mock);
+  } catch (e) {
+    fail(e.message); // names the variable, never its value
+  }
+  if (check.parseCheckAmount(a.amount) > capBase) fail(`--amount must be at most MAX_STAKE_USDC (${stakeCap.formatCap(capBase)})`);
+
   let programIds;
   let chain;
   if (mock) {
@@ -171,7 +181,7 @@ try {
 
   out(`mode: ${mock ? "MOCK (fixtures, mock chain)" : "REAL (live Panta + RPC; build and simulate only, nothing is signed or sent)"}`);
   out(`input: market=${market} side=${a.side} amount=${a.amount} wallet=${wallet} slippageBps=${a.slippage}`);
-  out(`config: PANTA_FEE_MODEL=${fee.model} PANTA_FEE_CAP_BPS=${fee.feeCapBps} programs=${[...programIds].join(",")}`);
+  out(`config: PANTA_FEE_MODEL=${fee.model} PANTA_FEE_CAP_BPS=${fee.feeCapBps} MAX_STAKE_USDC=${stakeCap.formatCap(capBase)} programs=${[...programIds].join(",")}`);
   out(`user USDC ATA: ${constants.associatedTokenAddress(wallet, constants.USDC_MINT)}`);
 
   const r = await check.runBuildCheck(
@@ -184,6 +194,7 @@ try {
       pinned: fee.model,
       feeCapBps: fee.feeCapBps,
       pantaProgramIds: programIds,
+      maxStakeCapBase: capBase,
     },
     { quote: panta.quotePrimaryOrder, build: panta.buildPrimaryOrder, chain },
   );

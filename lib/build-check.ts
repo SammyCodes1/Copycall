@@ -39,6 +39,8 @@ export type BuildCheckOptions = {
   pinned: PinnedFeeModel;
   feeCapBps: number;
   pantaProgramIds: ReadonlySet<string>;
+  /** MAX_STAKE_USDC (launch cap) in base units; the amount must also be at or under it. */
+  maxStakeCapBase?: bigint;
 };
 
 export type BuildCheckDeps = {
@@ -88,6 +90,8 @@ export async function runBuildCheck(o: BuildCheckOptions, deps: BuildCheckDeps):
   const pass = (name: string, detail: string) => report.checks.push({ name, ok: true, detail });
   try {
     const stake = parseCheckAmount(o.amountUsdc);
+    if (o.maxStakeCapBase !== undefined && stake > o.maxStakeCapBase)
+      throw new CheckFailed("input", "STAKE_ABOVE_CAP", `amount is above MAX_STAKE_USDC (${usdcExact(o.maxStakeCapBase)})`);
     if (!Number.isInteger(o.slippageBps) || o.slippageBps < 0 || o.slippageBps > MAX_SLIPPAGE_BPS)
       throw new CheckFailed("input", "SLIPPAGE", `slippage must be 0..${MAX_SLIPPAGE_BPS} bps`);
 
