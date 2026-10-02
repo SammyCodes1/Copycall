@@ -8,7 +8,7 @@ import "server-only";
  * lib/tx-guard.ts; this file only talks to the RPC.
  */
 import { Connection, PublicKey, type ConfirmedSignatureInfo, type VersionedTransaction } from "@solana/web3.js";
-import { SendError, type Chain, type ConfirmationState } from "./chain";
+import { BLOCKHASH_COMMITMENT, SendError, type Chain, type ConfirmationState } from "./chain";
 import { payerUsdcOutFromMeta } from "./landed";
 import { innerProgramIds, innerSystemOps, tokenAuthorityOps, type InnerSystemOp, type TokenAuthorityOp } from "./tx-guard";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "./solana-constants";
@@ -205,9 +205,28 @@ export const rpcChain: Chain = {
     return sendRawClassified(raw);
   },
 
-  async signatureSeen(signature) {
-    const { value } = await getConnection().getSignatureStatuses([signature], { searchTransactionHistory: true });
+  async signatureSeen(signature, minContextSlot) {
+    const { context, value } = await getConnection().getSignatureStatuses([signature], { searchTransactionHistory: true });
+    // L-01: an answer from a node behind the slot that proved the blockhash invalid proves nothing.
+    if (minContextSlot !== undefined && !(context?.slot >= minContextSlot))
+      throw new Error("signature status read is older than the blockhash read");
     return value[0] != null;
+  },
+
+  async blockhashExpiry(blockhash, lastValidBlockHeight) {
+    const conn = getConnection(); // the same connection for both reads
+    const v = await conn.isBlockhashValid(blockhash, { commitment: BLOCKHASH_COMMITMENT });
+    const slot = v.context.slot;
+    if (v.value === true) return { valid: true, expired: false, slot };
+    if (v.value !== false) throw new Error("isBlockhashValid: unexpected answer");
+    // Same commitment, and no older than the node state that said "invalid".
+    const height = await conn.getBlockHeight({ commitment: BLOCKHASH_COMMITMENT, minContextSlot: slot });
+    if (!Number.isSafeInteger(height)) throw new Error("getBlockHeight: unexpected answer");
+    return { valid: false, expired: height > lastValidBlockHeight, slot };
+  },
+
+  async currentBlockHeight() {
+    return getConnection().getBlockHeight({ commitment: BLOCKHASH_COMMITMENT });
   },
 
   async waitForConfirmation(signature, lastValidBlockHeight, timeoutMs, blockhash): Promise<ConfirmationState> {
@@ -237,7 +256,7 @@ export const rpcChain: Chain = {
   },
 
   async isBlockhashValid(blockhash) {
-    return (await getConnection().isBlockhashValid(blockhash, { commitment: "confirmed" })).value === true;
+    return (await getConnection().isBlockhashValid(blockhash, { commitment: BLOCKHASH_COMMITMENT })).value === true;
   },
 
   async getLandedTransaction(signature) {

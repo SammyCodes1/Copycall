@@ -622,7 +622,7 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
     marketId: trade.marketId,
     instructions: b.instructions,
     recentBlockhash: b.recentBlockhash,
-    lastValidBlockHeight: b.lastValidBlockHeight ?? null,
+    lastValidBlockHeight: await lastValidHeightOrBound(d, b.lastValidBlockHeight),
     maxUsdcOutBase: maxOut,
     copyOutflow: { model, depositBase: deposit, feeBase: fee },
     copyTerms: { side: toApiSide(trade.side), maxSlippageBps: settings.slippageBps, minSharesBase },
@@ -743,7 +743,7 @@ export async function buildClaimTx(d: FlowDeps, request: Request): Promise<Built
     marketId,
     instructions: c.instructions,
     recentBlockhash: c.recentBlockhash,
-    lastValidBlockHeight: c.lastValidBlockHeight ?? null,
+    lastValidBlockHeight: await lastValidHeightOrBound(d, c.lastValidBlockHeight),
     maxUsdcOutBase: 0n, // a claim may never move USDC out of the wallet
     claimMinUsdcInBase: claimMin, // B3-03 / E-04: must pay at least this into the user's own USDC ATA
     order: {
@@ -932,6 +932,24 @@ function signsOrder(order: PendingOrder, signature: string, wallet: string): boo
   }
 }
 
+/**
+ * L-01: Panta's lastValidBlockHeight, or (if it didn't send one) a safe UPPER bound: the
+ * blockhash is at most as new as Panta's node, so its last valid height is at most our current
+ * height + 150 (MAX_PROCESSING_AGE) plus a margin of LVBH_BOUND_MARGIN for Panta's node being
+ * ahead of ours. Over-estimating only delays a provably-dead failure; it can never make one
+ * early. An RPC error stores null: such an order is never failed as expired (unknown).
+ */
+export const LVBH_BOUND_MARGIN = 150;
+async function lastValidHeightOrBound(d: FlowDeps, fromPanta: number | undefined): Promise<number | null> {
+  if (typeof fromPanta === "number" && Number.isSafeInteger(fromPanta)) return fromPanta;
+  try {
+    const h = await d.chain.currentBlockHeight();
+    return Number.isSafeInteger(h) ? h + 150 + LVBH_BOUND_MARGIN : null;
+  } catch {
+    return null;
+  }
+}
+
 /** G-03: how many times one order's signed bytes may be broadcast in total. */
 export const MAX_SENDS = 4;
 
@@ -956,15 +974,34 @@ async function blockhashState(d: FlowDeps, order: PendingOrder): Promise<"valid"
 }
 
 /**
- * THE rule for failing an order that hasn't landed (I-01, I-03, J-02, J-06): isBlockhashValid
- * positively says false (so nothing over this message can land from now on), and only THEN the
- * signature has no on-chain trace at all (any status, with history, and no transaction). Any RPC
- * error, or an unreadable stored message, means unknown: false, the order stays pending.
+ * L-01: the blockhash is provably past: isBlockhashValid positively false AND, on the same
+ * connection and commitment, a block height strictly above the order's stored
+ * lastValidBlockHeight (see Chain.blockhashExpiry). A lagging node behind a load balancer can say
+ * "invalid" for a valid blockhash, but it can't report a height it hasn't reached. Legacy orders
+ * without a lastValidBlockHeight, unreadable messages and any RPC error: null (unknown).
+ */
+async function provablyPast(d: FlowDeps, order: PendingOrder): Promise<{ slot: number } | null> {
+  const bh = blockhashOf(order);
+  if (!bh || order.lastValidBlockHeight === null || !Number.isSafeInteger(order.lastValidBlockHeight)) return null;
+  try {
+    const x = await d.chain.blockhashExpiry(bh, order.lastValidBlockHeight);
+    return x.valid === false && x.expired === true ? { slot: x.slot } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * THE rule for failing an order that hasn't landed (I-01, I-03, J-02, J-06, L-01): the blockhash
+ * is provably past (provablyPast), and only THEN the signature has no on-chain trace at all (any
+ * status, with history, from a node at least as current as the blockhash read; and no
+ * transaction). Any RPC error, or an unknown height, means unknown: false, the order stays pending.
  */
 export async function provablyDead(d: FlowDeps, order: PendingOrder, signature: string): Promise<boolean> {
-  if ((await blockhashState(d, order)) !== "expired") return false;
+  const past = await provablyPast(d, order);
+  if (!past) return false;
   try {
-    if (await d.chain.signatureSeen(signature)) return false;
+    if (await d.chain.signatureSeen(signature, past.slot)) return false;
     if (await d.chain.getLandedTransaction(signature)) return false;
     return true;
   } catch {
@@ -1443,7 +1480,7 @@ export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
     let rowErrors = 0;
     for (const o of stale) {
       try {
-        if ((await blockhashState(d, o)) !== "expired") continue;
+        if (!(await provablyPast(d, o))) continue; // L-01: same proof as provablyDead
         if (await d.copy.failIfUnbroadcast(o.id)) out.abandoned++;
       } catch {
         rowErrors++;

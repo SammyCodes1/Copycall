@@ -21,8 +21,10 @@ import {
   myPositions,
   quoteCopy,
   resetFeeModelAlerts,
+  LVBH_BOUND_MARGIN,
   MAX_SENDS,
   SWEEP,
+  provablyDead,
   sweepBroadcastOrders,
   type FlowDeps,
 } from "@/lib/copy-core";
@@ -3241,5 +3243,237 @@ describe("H-04: F-02 is re-checked at confirm (landed token instructions; curren
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("L-01: 'provably past' needs isBlockhashValid=false AND a height above lastValidBlockHeight, same connection + commitment", () => {
+  const chain = getSharedMockChain();
+  const LVBH = 1_000_000; // panta-mock's lastValidBlockHeight
+  const signed = async (d: FlowDeps, u: User) => {
+    const { b } = await quoteAndBuild(d, u);
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const sig = bs58.encode(VersionedTransaction.deserialize(Buffer.from(signedTransaction, "base64")).signatures[0]);
+    return { b, sig, first: { orderId: b.orderId, signedTransaction } };
+  };
+  const late = (state: CopyMemoryState, c: FlowDeps["chain"], min = 5) =>
+    deps({ state, chain: c, nowMs: () => Date.now() + min * 60_000, resendDelayMs: 0 });
+  /** "invalid", but the node's block height is `h`. */
+  const invalidAt = (h: number | (() => Promise<number>), over: Partial<FlowDeps["chain"]> = {}): FlowDeps["chain"] => ({
+    ...chain,
+    isBlockhashValid: async () => false,
+    currentBlockHeight: typeof h === "number" ? async () => h : h,
+    ...over,
+  });
+  const nothingSpent = /nothing was (spent|sent)/i;
+
+  it("PoF (lagging node): isBlockhashValid=false but height <= lastValidBlockHeight: pending, never 'Nothing was spent'; it then lands and is recorded once", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const { b, sig, first } = await signed(d, u);
+    for (const h of [LVBH - 50, LVBH]) {
+      const lag = late(state, invalidAt(h));
+      // By signature (never broadcast by us) and by signed bytes with a refusing send.
+      const e = await confirmOrder(lag, post("/c", { orderId: b.orderId, signature: sig }, u), "copy").catch((x) => x);
+      expect(e).toMatchObject({ code: "NOT_BROADCAST" });
+      expect(String(e.message)).not.toMatch(nothingSpent);
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+      expect(await provablyDead(lag, state.orders.get(b.orderId)!, sig)).toBe(false);
+      expect((await sweepBroadcastOrders(late(state, invalidAt(h), 17))).abandoned).toBe(0);
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    }
+    // A broadcast that the lagging node refuses: SEND_UNCONFIRMED (retryable), still pending.
+    const refusing = invalidAt(LVBH - 1, {
+      send: async () => Promise.reject(new SendError("refused", -32002, "failed to send transaction: Blockhash not found")),
+    });
+    const e = await confirmOrder(deps({ state, chain: refusing, resendDelayMs: 0 }), post("/c", first, u), "copy").catch((x) => x);
+    expect(["SEND_UNCONFIRMED", "NOT_BROADCAST"]).toContain(e.code);
+    expect(String(e.message)).not.toMatch(nothingSpent);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    // The blockhash was valid all along: the copy lands and is recorded exactly once.
+    await chain.send(Buffer.from(first.signedTransaction, "base64"));
+    expect((await confirmOrder(late(state, chain), post("/c", first, u), "copy")).status).toBe("confirmed");
+    expect((await confirmOrder(late(state, chain), post("/c", first, u), "copy")).status).toBe("confirmed");
+    expect(state.copies.size).toBe(1);
+  });
+
+  it("height strictly above lastValidBlockHeight AND invalid AND no trace: failed (only then 'nothing was spent')", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const { b, sig } = await signed(deps({ state }), u);
+    expect(await code(confirmOrder(late(state, invalidAt(LVBH + 1)), post("/c", { orderId: b.orderId, signature: sig }, u), "copy"))).toBe(
+      "NOT_BROADCAST",
+    );
+    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+  });
+
+  it("error case: isBlockhashValid throws: unknown, pending (confirm, provablyDead and the abandon sweep)", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const { b, sig } = await signed(deps({ state }), u);
+    const c = invalidAt(LVBH + 10_000, { isBlockhashValid: async () => Promise.reject(new Error("429")) });
+    expect(await code(confirmOrder(late(state, c), post("/c", { orderId: b.orderId, signature: sig }, u), "copy"))).toBe("NOT_BROADCAST");
+    expect(await provablyDead(late(state, c), state.orders.get(b.orderId)!, sig)).toBe(false);
+    expect((await sweepBroadcastOrders(late(state, c, 17))).abandoned).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+  });
+
+  it("error case: the block-height read throws: unknown, pending (confirm, provablyDead and the abandon sweep)", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const { b, sig } = await signed(deps({ state }), u);
+    const c = invalidAt(async () => Promise.reject(new Error("Minimum context slot has not been reached")));
+    expect(await code(confirmOrder(late(state, c), post("/c", { orderId: b.orderId, signature: sig }, u), "copy"))).toBe("NOT_BROADCAST");
+    expect(await provablyDead(late(state, c), state.orders.get(b.orderId)!, sig)).toBe(false);
+    expect((await sweepBroadcastOrders(late(state, c, 17))).abandoned).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+  });
+
+  it("error case: the signature-status read is older than the blockhash read (or errors): unknown, pending", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const { b, sig } = await signed(deps({ state }), u);
+    const seen: (number | undefined)[] = [];
+    const c = invalidAt(LVBH + 1, {
+      blockhashExpiry: async () => ({ valid: false, expired: true, slot: 777 }),
+      signatureSeen: async (_s: string, min?: number) => {
+        seen.push(min);
+        throw new Error("signature status read is older than the blockhash read");
+      },
+    });
+    expect(await provablyDead(late(state, c), state.orders.get(b.orderId)!, sig)).toBe(false);
+    expect(seen).toEqual([777]); // the status read is pinned to the blockhash read's slot
+    expect(await code(confirmOrder(late(state, c), post("/c", { orderId: b.orderId, signature: sig }, u), "copy"))).toBe("NOT_BROADCAST");
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+  });
+
+  it("legacy orders with no stored lastValidBlockHeight are never failed as expired", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const { b, sig } = await signed(deps({ state }), u);
+    state.orders.get(b.orderId)!.lastValidBlockHeight = null;
+    const c = invalidAt(LVBH + 10_000_000);
+    expect(await code(confirmOrder(late(state, c), post("/c", { orderId: b.orderId, signature: sig }, u), "copy"))).toBe("NOT_BROADCAST");
+    expect((await sweepBroadcastOrders(late(state, c, 17))).abandoned).toBe(0);
+    expect(state.orders.get(b.orderId)?.status).toBe("pending");
+  });
+
+  it("build: a missing lastValidBlockHeight from Panta stores a conservative upper bound (null on an RPC error)", async () => {
+    const u = await signedInUser();
+    const noLvbh = {
+      ...deps().panta,
+      buildPrimaryOrder: async (...a: Parameters<typeof panta.buildPrimaryOrder>) => ({
+        ...(await panta.buildPrimaryOrder(...a)),
+        lastValidBlockHeight: undefined,
+      }),
+    };
+    const s1 = createCopyMemoryState();
+    const { b } = await quoteAndBuild(deps({ state: s1, panta: noLvbh, chain: { ...chain, currentBlockHeight: async () => 5_000 } }), u);
+    expect(s1.orders.get(b.orderId)?.lastValidBlockHeight).toBe(5_000 + 150 + LVBH_BOUND_MARGIN);
+    const s2 = createCopyMemoryState();
+    const broken = { ...chain, currentBlockHeight: async () => Promise.reject(new Error("rpc")) };
+    const { b: b2 } = await quoteAndBuild(deps({ state: s2, panta: noLvbh, chain: broken }), u);
+    expect(s2.orders.get(b2.orderId)?.lastValidBlockHeight).toBeNull();
+    // Panta's own value is kept as is.
+    const s3 = createCopyMemoryState();
+    const { b: b3 } = await quoteAndBuild(deps({ state: s3 }), u);
+    expect(s3.orders.get(b3.orderId)?.lastValidBlockHeight).toBe(LVBH);
+  });
+
+  describe("the real adapter: one connection, one commitment, minContextSlot", () => {
+    const setup = async () => {
+      process.env.SOLANA_RPC_URL ??= "https://rpc.example/";
+      const { Connection } = await import("@solana/web3.js");
+      const { rpcChain, getConnection } = await import("@/lib/solana");
+      const { BLOCKHASH_COMMITMENT } = await import("@/lib/chain");
+      return { Connection, rpcChain, conn: getConnection(), BLOCKHASH_COMMITMENT };
+    };
+    const bh = bs58.encode(Buffer.alloc(32, 9));
+    const sig = bs58.encode(Buffer.alloc(64, 3));
+
+    it("isBlockhashValid and getBlockHeight go to the same connection with the same commitment; height pinned to the validity answer's slot", async () => {
+      const { Connection, rpcChain, conn, BLOCKHASH_COMMITMENT } = await setup();
+      const thisArgs: unknown[] = [];
+      const valid = vi.spyOn(Connection.prototype, "isBlockhashValid").mockImplementation(async function (this: unknown) {
+        thisArgs.push(this);
+        return { context: { slot: 4242 }, value: false };
+      });
+      const height = vi.spyOn(conn, "getBlockHeight").mockResolvedValue(LVBH + 1);
+      try {
+        expect(await rpcChain.blockhashExpiry(bh, LVBH)).toEqual({ valid: false, expired: true, slot: 4242 });
+        expect(thisArgs[0]).toBe(conn);
+        expect(valid.mock.calls[0]).toEqual([bh, { commitment: BLOCKHASH_COMMITMENT }]);
+        expect(height.mock.calls[0]).toEqual([{ commitment: BLOCKHASH_COMMITMENT, minContextSlot: 4242 }]);
+        // The lagging-node shape: invalid, but not past the height: not expired.
+        height.mockResolvedValue(LVBH);
+        expect(await rpcChain.blockhashExpiry(bh, LVBH)).toEqual({ valid: false, expired: false, slot: 4242 });
+        // Valid: no height read needed.
+        height.mockClear();
+        valid.mockResolvedValue({ context: { slot: 1 }, value: true });
+        expect(await rpcChain.blockhashExpiry(bh, LVBH)).toMatchObject({ valid: true, expired: false });
+        expect(height).not.toHaveBeenCalled();
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("error cases: isBlockhashValid rejects, getBlockHeight rejects, or either answers garbage: the adapter throws", async () => {
+      const { Connection, rpcChain, conn } = await setup();
+      const valid = vi.spyOn(Connection.prototype, "isBlockhashValid").mockRejectedValue(new Error("503"));
+      const height = vi.spyOn(conn, "getBlockHeight").mockResolvedValue(LVBH + 1);
+      try {
+        await expect(rpcChain.blockhashExpiry(bh, LVBH)).rejects.toThrow("503");
+        valid.mockResolvedValue({ context: { slot: 9 }, value: null as never });
+        await expect(rpcChain.blockhashExpiry(bh, LVBH)).rejects.toThrow(/unexpected/);
+        valid.mockResolvedValue({ context: { slot: 9 }, value: false });
+        height.mockRejectedValue(new Error("Minimum context slot has not been reached"));
+        await expect(rpcChain.blockhashExpiry(bh, LVBH)).rejects.toThrow(/Minimum context slot/);
+        height.mockResolvedValue(Number.NaN);
+        await expect(rpcChain.blockhashExpiry(bh, LVBH)).rejects.toThrow(/unexpected/);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("signatureSeen: an answer from a node behind minContextSlot is an error, not 'no trace'", async () => {
+      const { Connection, rpcChain } = await setup();
+      const st = vi.spyOn(Connection.prototype, "getSignatureStatuses").mockResolvedValue({ context: { slot: 99 }, value: [null] } as never);
+      try {
+        await expect(rpcChain.signatureSeen(sig, 100)).rejects.toThrow(/older/);
+        expect(await rpcChain.signatureSeen(sig, 99)).toBe(false);
+        expect(await rpcChain.signatureSeen(sig)).toBe(false);
+        st.mockResolvedValue({ context: { slot: 99 }, value: [{ confirmationStatus: "processed", err: null }] } as never);
+        expect(await rpcChain.signatureSeen(sig, 50)).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("end to end on the real adapter: each RPC error keeps the order pending; only invalid + height past + no trace fails it", async () => {
+      const { Connection, rpcChain, conn } = await setup();
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const { b, sig: osig } = await signed(deps({ state }), u);
+      const order = () => state.orders.get(b.orderId)!;
+      const valid = vi.spyOn(Connection.prototype, "isBlockhashValid").mockResolvedValue({ context: { slot: 50 }, value: false });
+      const height = vi.spyOn(conn, "getBlockHeight").mockResolvedValue(LVBH + 1);
+      const st = vi.spyOn(Connection.prototype, "getSignatureStatuses").mockResolvedValue({ context: { slot: 50 }, value: [null] } as never);
+      vi.spyOn(Connection.prototype, "getTransaction").mockResolvedValue(null);
+      const d = late(state, rpcChain);
+      try {
+        valid.mockRejectedValueOnce(new Error("429"));
+        expect(await provablyDead(d, order(), osig)).toBe(false);
+        height.mockRejectedValueOnce(new Error("Minimum context slot has not been reached"));
+        expect(await provablyDead(d, order(), osig)).toBe(false);
+        height.mockResolvedValueOnce(LVBH); // lagging node: not past
+        expect(await provablyDead(d, order(), osig)).toBe(false);
+        st.mockResolvedValueOnce({ context: { slot: 49 }, value: [null] } as never); // status from an older node
+        expect(await provablyDead(d, order(), osig)).toBe(false);
+        expect(order().status).toBe("pending");
+        expect(await provablyDead(d, order(), osig)).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
   });
 });

@@ -25,6 +25,9 @@ export type LandedTx = {
   payerPostLamports?: number | null;
 };
 
+/** L-01: the commitment of every blockhash-expiry read (isBlockhashValid, getBlockHeight). */
+export const BLOCKHASH_COMMITMENT = "confirmed" as const;
+
 export type ConfirmationState = "confirmed" | "failed" | "pending" | "expired";
 
 /**
@@ -61,8 +64,22 @@ export interface Chain extends ChainReader {
   ): Promise<ConfirmationState>;
   /** G-03: whether a blockhash can still land a transaction (bounded re-sends only while true). */
   isBlockhashValid(blockhash: string): Promise<boolean>;
-  /** I-01: any on-chain trace of this signature (any commitment, incl. processed, with history). */
-  signatureSeen(signature: string): Promise<boolean>;
+  /**
+   * I-01 / L-01: any on-chain trace of this signature (any commitment, incl. processed, with
+   * history). With `minContextSlot`, a node whose answer is older than that slot is an error
+   * (unknown), never "no trace".
+   */
+  signatureSeen(signature: string, minContextSlot?: number): Promise<boolean>;
+  /**
+   * L-01: is this blockhash provably past? ONE connection, ONE commitment (BLOCKHASH_COMMITMENT)
+   * for both reads: isBlockhashValid, then getBlockHeight with minContextSlot = that answer's
+   * slot. `expired` only if the blockhash is reported invalid AND the block height is strictly
+   * greater than `lastValidBlockHeight` (a lagging node reports a lower height, so it can't prove
+   * expiry). `slot` = the isBlockhashValid answer's context slot. Any RPC error throws (unknown).
+   */
+  blockhashExpiry(blockhash: string, lastValidBlockHeight: number): Promise<{ valid: boolean; expired: boolean; slot: number }>;
+  /** L-01: the current block height at BLOCKHASH_COMMITMENT (to bound a missing lastValidBlockHeight at build). */
+  currentBlockHeight(): Promise<number>;
   /** The transaction as it landed on chain (confirmed commitment), or null if not found yet. */
   getLandedTransaction(signature: string): Promise<LandedTx | null>;
   /** F-01: the wallet account's current owner, executable flag and data length (null = no account). */

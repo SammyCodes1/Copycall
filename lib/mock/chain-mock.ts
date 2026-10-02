@@ -55,6 +55,8 @@ type MockPosition = { marketId: string; side: Side; sharesBase: bigint; claimed:
 type Ledger = {
   tokens: Map<string, TokenAcct>;
   lamports: Map<string, bigint>;
+  /** L-01: the mock cluster's block height (default 2_000_000, past every mock order's 1_000_000). */
+  blockHeight?: number;
   positions: Map<string, Map<string, MockPosition>>; // wallet -> market|side
 };
 
@@ -394,6 +396,19 @@ export function createMockChain(): MockChain {
 
     async signatureSeen(signature) {
       return state.landed.has(signature);
+    },
+
+    // L-01: composed through `this`, so a test that overrides isBlockhashValid / currentBlockHeight
+    // on a spread copy of the mock drives this too. Mock heights: orders carry 1_000_000 (panta-mock),
+    // and the mock cluster is past it unless a test says otherwise.
+    async blockhashExpiry(this: Chain, blockhash, lastValidBlockHeight) {
+      const slot = 1;
+      if (await this.isBlockhashValid(blockhash)) return { valid: true, expired: false, slot };
+      return { valid: false, expired: (await this.currentBlockHeight()) > lastValidBlockHeight, slot };
+    },
+
+    async currentBlockHeight() {
+      return state.blockHeight ?? 2_000_000;
     },
 
     async getLandedTransaction(signature) {
