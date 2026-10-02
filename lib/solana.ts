@@ -9,8 +9,9 @@ import "server-only";
  */
 import { Connection, PublicKey, type ConfirmedSignatureInfo, type VersionedTransaction } from "@solana/web3.js";
 import type { Chain, ConfirmationState } from "./chain";
+import { payerUsdcOutFromMeta } from "./landed";
 import { innerProgramIds } from "./tx-guard";
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, USDC_MINT } from "./solana-constants";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "./solana-constants";
 import creatorsJson from "@/fixtures/creators.json";
 import { isMockMode, requireEnv } from "./env";
 
@@ -173,24 +174,17 @@ export const rpcChain: Chain = {
       maxSupportedTransactionVersion: 0,
     });
     if (!tx) return null;
-    // USDC the fee payer lost, from the landed transaction's own token balances.
-    let payerUsdcOutBase: bigint | null = null;
     const payer = tx.transaction.message.staticAccountKeys[0]?.toBase58();
-    if (tx.meta?.preTokenBalances && tx.meta.postTokenBalances && payer) {
-      const sum = (rows: typeof tx.meta.preTokenBalances) =>
-        (rows ?? [])
-          .filter((r) => r.mint === USDC_MINT && r.owner === payer)
-          .reduce((n, r) => n + BigInt(r.uiTokenAmount.amount), 0n);
-      payerUsdcOutBase = sum(tx.meta.preTokenBalances) - sum(tx.meta.postTokenBalances);
-    }
+    const allKeys = [
+      ...tx.transaction.message.staticAccountKeys.map((k) => k.toBase58()),
+      ...(tx.meta?.loadedAddresses?.writable ?? []).map((k) => k.toBase58()),
+      ...(tx.meta?.loadedAddresses?.readonly ?? []).map((k) => k.toBase58()),
+    ];
+    // E-03: attributed row by row; anything unattributable is null (fail closed), never 0.
+    const payerUsdcOutBase = payer ? payerUsdcOutFromMeta(tx.meta, allKeys, payer) : null;
     let innerPrograms: string[] | null = null;
     try {
-      const keys = [
-        ...tx.transaction.message.staticAccountKeys.map((k) => k.toBase58()),
-        ...(tx.meta?.loadedAddresses?.writable ?? []).map((k) => k.toBase58()),
-        ...(tx.meta?.loadedAddresses?.readonly ?? []).map((k) => k.toBase58()),
-      ];
-      innerPrograms = innerProgramIds(tx.meta?.innerInstructions, keys);
+      innerPrograms = innerProgramIds(tx.meta?.innerInstructions, allKeys);
     } catch {
       innerPrograms = null;
     }

@@ -16,6 +16,7 @@ import { PublicKey, TransactionMessage, VersionedMessage, VersionedTransaction }
 import marketsJson from "@/fixtures/markets.json";
 import positionsJson from "@/fixtures/positions.json";
 import type { Chain, LandedTx } from "../chain";
+import { payerUsdcOutFromMeta, type TokenBalanceRow } from "../landed";
 import type { PantaPosition, Side } from "../schemas";
 import {
   ATA_PROGRAM_ID,
@@ -265,14 +266,17 @@ export function createMockChain(): MockChain {
       pos.set(`${loss[0]}|${loss[1]}`, { marketId: loss[0], side: loss[1], sharesBase: 9_600_000n, claimed: false });
   }
 
-  /** USDC held by `owner` across its token accounts (like meta.pre/postTokenBalances). */
-  const usdcOf = (l: Ledger, owner: string) =>
-    [...l.tokens.values()].filter((t) => t.mint === USDC_MINT && t.owner === owner).reduce((n, t) => n + t.amount, 0n);
+  /** Token-balance rows for the message's accounts, shaped like RPC meta.pre/postTokenBalances. */
+  const tokenRows = (l: Ledger, keys: string[]): TokenBalanceRow[] =>
+    keys.flatMap((k, accountIndex) => {
+      const t = l.tokens.get(k);
+      return t ? [{ accountIndex, mint: t.mint, owner: t.owner, uiTokenAmount: { amount: t.amount.toString() } }] : [];
+    });
 
   function land(message: VersionedMessage, signature: string, simulated: boolean) {
     if (state.landed.has(signature)) throw new Error("Transaction already processed");
-    const payer = message.staticAccountKeys[0].toBase58();
-    const usdcBefore = usdcOf(state, payer);
+    const keys = message.staticAccountKeys.map((k) => k.toBase58());
+    const preTokenBalances = tokenRows(state, keys);
     const next = cloneLedger(state);
     let err: unknown = null;
     const inner: string[] = [];
@@ -284,7 +288,12 @@ export function createMockChain(): MockChain {
     } catch (e) {
       err = e instanceof MockTxError ? { InstructionError: [e.index, e.reason] } : { error: String(e) };
     }
-    const payerUsdcOutBase = usdcBefore - usdcOf(state, payer);
+    // The same attribution code as the real RPC path (lib/landed.ts).
+    const payerUsdcOutBase = payerUsdcOutFromMeta(
+      { preTokenBalances, postTokenBalances: tokenRows(state, keys) },
+      keys,
+      keys[0],
+    );
     state.landed.set(signature, {
       err,
       message,
@@ -362,8 +371,9 @@ export function createMockChain(): MockChain {
             err: t.err,
             message: t.message,
             signatures: t.signatures,
-            payerUsdcOutBase: t.payerUsdcOutBase ?? 0n,
-            innerPrograms: t.innerPrograms ?? [],
+            // E-11: unknown stays unknown (fail closed), like the real RPC.
+            payerUsdcOutBase: t.payerUsdcOutBase ?? null,
+            innerPrograms: t.innerPrograms ?? null,
           }
         : null;
     },

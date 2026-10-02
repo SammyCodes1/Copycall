@@ -731,6 +731,10 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   } catch (err) {
     asRejection(err);
   }
+  if (landed.err !== null) {
+    await d.copy.failOrder(order.id);
+    throw new AuthError(422, "TX_FAILED", "Transaction failed on-chain. Nothing was copied.");
+  }
   // B3-04: every program the landed transaction reached through CPI must be allowlisted.
   if (landed.innerPrograms === undefined || landed.innerPrograms === null) {
     d.log?.(`${kind} confirm: no inner instructions for ${signature.slice(0, 8)}…`);
@@ -743,10 +747,7 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     await d.copy.failOrder(order.id);
     asRejection(err);
   }
-  if (landed.err !== null) {
-    await d.copy.failOrder(order.id);
-    throw new AuthError(422, "TX_FAILED", "Transaction failed on-chain. Nothing was copied.");
-  }
+
   // D-03 / B3-03: what actually moved, from the landed transaction's own token balances.
   const moved = landed.payerUsdcOutBase;
   if (moved === undefined || moved === null) {
