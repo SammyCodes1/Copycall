@@ -785,6 +785,16 @@ export type ConfirmResult =
 export const REVIEW_WARNINGS: Record<string, string> = {
   USDC_AUTHORITY:
     "This transaction also changed control of your USDC account (a delegate, a new owner or a close). Open your wallet, check your USDC account and revoke any delegate you didn't set. We've flagged it for review.",
+  UNEXPECTED_CPI:
+    "This transaction also called a program we didn't expect. It was recorded and flagged for review; check your wallet's recent activity.",
+  WALLET_OWNER:
+    "This transaction also changed your wallet account itself. It was recorded and flagged for review; check your wallet before using it again.",
+  SYSTEM_CPI:
+    "This transaction also ran a System instruction we couldn't read. It was recorded and flagged for review; check your wallet's recent activity.",
+  OVER_LIMIT:
+    "This transaction moved more USDC than you approved. It was recorded at the approved amount and flagged for review; check your wallet's USDC balance.",
+  PAYOUT_TOO_LOW:
+    "This claim paid less into your wallet than your winning shares. It was recorded and flagged for review; check your wallet's USDC balance.",
 };
 const GENERIC_REVIEW_WARNING = "This transaction did something we didn't expect. It was recorded and flagged for review; check your wallet.";
 export function reviewWarning(flag: string | null | undefined): string | undefined {
@@ -1201,9 +1211,9 @@ async function verifyAndRecord(
   try {
     checkInnerPrograms(landed.innerPrograms, d.pantaProgramIds);
   } catch (err) {
-    d.log?.(`ALERT ${kind} confirm UNEXPECTED_CPI for ${signature.slice(0, 8)}…`);
-    await d.copy.failOrder(order.id);
-    asRejection(err);
+    // L-02: it landed, so it ran: record + flag, never fail. A non-finding error: pending.
+    if (!(err instanceof TxRejected)) throw verifyUnavailable(order.id, signature);
+    flag(err.code, err.message.slice(0, 160));
   }
   // F-01 / J-07: the wallet as of the LANDED slot, not now. No System instruction in this tx
   // (inner, or top level) assigned, allocated or created the wallet, so its owner and data are
@@ -1245,12 +1255,12 @@ async function verifyAndRecord(
   try {
     checkInnerSystemOps(landed.innerSystemOps, owner.wallet);
   } catch (err) {
-    const code = err instanceof TxRejected ? err.code : "WALLET_OWNER";
-    (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
-      `${kind} confirm ${code} for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…): not recorded`,
-    );
-    await d.copy.failOrder(order.id);
-    asRejection(err);
+    // L-02: WALLET_OWNER / SYSTEM_CPI on what landed: record + flag, never fail.
+    if (!(err instanceof TxRejected)) {
+      alertOnce(d, `system-check:${order.id}`, `${kind} confirm: the inner System check errored for ${signature.slice(0, 8)}…; not recorded yet`);
+      throw verifyUnavailable(order.id, signature);
+    }
+    flag(err.code, err.message.slice(0, 160));
   }
   // H-04: F-02 at confirm, on what actually ran. The simulation proved no CPI set a delegate,
   // changed an authority or closed the user's USDC account; a program that branches on slot or
@@ -1302,13 +1312,12 @@ async function verifyAndRecord(
     if (d.maxStakeCapBase < limit) limit = d.maxStakeCapBase;
   }
   const tooLittle = kind === "claim" && -moved < usdcToBase(order.shares);
-  if (moved > limit || tooLittle) {
-    d.log?.(`${kind} confirm ${moved > limit ? "OVER_LIMIT" : "PAYOUT_TOO_LOW"} for ${signature.slice(0, 8)}…`);
-    await d.copy.failOrder(order.id);
-    throw moved > limit
-      ? new AuthError(422, "OVER_LIMIT", "This transaction moved more USDC than you approved. It was not recorded.")
-      : new AuthError(422, "PAYOUT_TOO_LOW", "This claim didn't pay your winnings to your wallet. It was not recorded.");
-  }
+  // L-02: the limit can't be enforced on a tx that already landed. Recorded (at the order's
+  // amount, which is within the cap and the DB ceiling) and flagged with the real figures alerted.
+  if (moved > limit)
+    flag("OVER_LIMIT", `moved ${usdcExact(moved)} USDC, limit ${usdcExact(limit)} USDC`);
+  else if (tooLittle)
+    flag("PAYOUT_TOO_LOW", `paid in ${usdcExact(-moved < 0n ? 0n : -moved)} USDC, expected at least ${order.shares}`);
   // H-04 (auditor's suggestion), detection only: the USDC account as it is NOW. It may differ
   // because of something the user did later, so this never blocks the record; it alerts once.
   try {

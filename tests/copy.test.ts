@@ -777,17 +777,25 @@ describe("D-03: the landed outflow is checked at confirm", () => {
     expect(landed?.payerUsdcOutBase).toBe(usdcToBase(state.orders.get(b.orderId)!.maxUsdcOut!));
   });
 
-  it("rejects and fails the order when more USDC left the wallet than the stake", async () => {
+  it("L-02: more USDC left the wallet than the stake: it landed, so it is recorded once (at the approved amount), flagged OVER_LIMIT, alerted once, never failed", async () => {
     const u = await signedInUser();
     const state = createCopyMemoryState();
-    const logs: string[] = [];
-    const d = deps({ state, chain: withLanded((m) => (m ?? 0n) + 1n), log: (m: string) => logs.push(m) });
+    const alerts: string[] = [];
+    const d = deps({ state, chain: withLanded((m) => (m ?? 0n) + 1n), alert: (m: string) => alerts.push(m) });
     const { b } = await quoteAndBuild(d, u);
-    const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
-    expect(await code(confirmOrder(d, req, "copy"))).toBe("OVER_LIMIT");
-    expect(state.copies.size).toBe(0);
-    expect(state.orders.get(b.orderId)?.status).toBe("failed");
-    expect(logs.join("\n")).toContain("OVER_LIMIT");
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const r = await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction }, u), "copy");
+    expect(r.status).toBe("confirmed");
+    expect((r as { warning?: string }).warning).toMatch(/moved more USDC than you approved/);
+    expect((r as { warning?: string }).warning).not.toMatch(/nothing was (spent|sent)|start again/i);
+    expect(state.copies.size).toBe(1);
+    expect([...state.copies.values()][0].amountUsdc).toBe(state.orders.get(b.orderId)!.amountUsdc);
+    expect(state.orders.get(b.orderId)?.status).toBe("confirmed");
+    expect(state.orders.get(b.orderId)?.reviewFlag).toBe("OVER_LIMIT");
+    expect(await code(confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction }, u), "copy"))).toBe("OK");
+    expect(state.copies.size).toBe(1);
+    expect(alerts.filter((m) => m.includes("OVER_LIMIT")).length).toBe(1);
+    expect(alerts.join("\n")).toMatch(/moved \d+\.\d+ USDC, limit \d+\.\d+ USDC/);
   });
 
   it("fails closed (retryable, nothing recorded) when the token balances are missing", async () => {
@@ -889,8 +897,12 @@ describe("B3-03: claims must pay the winnings into the user's own USDC ATA", () 
     });
     const b = await buildClaimTx(d, post("/cb", { marketId: win.marketId }, u));
     const req = post("/cc", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
-    expect(await code(confirmOrder(d, req, "claim"))).toBe("PAYOUT_TOO_LOW");
-    expect(state.claims.size).toBe(0);
+    // L-02: it landed (the claim ran), so it is recorded and flagged, never failed.
+    const r = await confirmOrder({ ...d, alert: () => {} }, req, "claim");
+    expect(r.status).toBe("confirmed");
+    expect((r as { warning?: string }).warning).toMatch(/paid less/);
+    expect(state.claims.size).toBe(1);
+    expect(state.orders.get(b.orderId)?.reviewFlag).toBe("PAYOUT_TOO_LOW");
   });
 });
 
@@ -906,18 +918,20 @@ describe("B3-04: the landed transaction's CPIs are checked at confirm", () => {
     };
   };
 
-  it("a landed CPI into an unknown program is refused, the order failed and nothing recorded", async () => {
+  it("L-02: a landed CPI into an unknown program: it ran, so it is recorded once, flagged UNEXPECTED_CPI, alerted, never failed", async () => {
     const u = await signedInUser();
     const state = createCopyMemoryState();
-    const logs: string[] = [];
+    const alerts: string[] = [];
     const evil = Keypair.generate().publicKey.toBase58();
-    const d = deps({ state, chain: landedWith((p) => [...(p ?? []), evil]), log: (m: string) => logs.push(m) });
+    const d = deps({ state, chain: landedWith((p) => [...(p ?? []), evil]), alert: (m: string) => alerts.push(m) });
     const { b } = await quoteAndBuild(d, u);
     const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
-    expect(await code(confirmOrder(d, req, "copy"))).toBe("TX_REJECTED");
-    expect(state.copies.size).toBe(0);
-    expect(state.orders.get(b.orderId)?.status).toBe("failed");
-    expect(logs.join("\n")).toContain("UNEXPECTED_CPI");
+    const r = await confirmOrder(d, req, "copy");
+    expect(r.status).toBe("confirmed");
+    expect((r as { warning?: string }).warning).toMatch(/program we didn't expect/);
+    expect(state.copies.size).toBe(1);
+    expect(state.orders.get(b.orderId)?.reviewFlag).toBe("UNEXPECTED_CPI");
+    expect(alerts.join("\n")).toContain(evil);
   });
 
   it("missing inner instructions fail closed (retryable, nothing recorded)", async () => {
@@ -1290,10 +1304,13 @@ describe("E-02: a landed copy is never left unrecorded after VERIFY_UNAVAILABLE"
         return t && { ...t, payerUsdcOutBase: (t.payerUsdcOutBase ?? 0n) + 1n };
       },
     };
-    const later = deps({ state, chain: over, nowMs: () => Date.now() + 5 * 60_000 });
-    expect(await sweepBroadcastOrders(later)).toMatchObject({ checked: 1, failed: 1 });
-    expect(state.copies.size).toBe(0);
-    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+    const alerts: string[] = [];
+    const later = deps({ state, chain: over, nowMs: () => Date.now() + 5 * 60_000, alert: (m: string) => alerts.push(m) });
+    // L-02: a landed over-limit copy is recorded (flagged), not failed; the sweep alerts on it.
+    expect(await sweepBroadcastOrders(later)).toMatchObject({ checked: 1, confirmed: 1, failed: 0 });
+    expect(state.copies.size).toBe(1);
+    expect(state.orders.get(b.orderId)?.reviewFlag).toBe("OVER_LIMIT");
+    expect(alerts.join("\n")).toMatch(/OVER_LIMIT/);
   });
 
   it("the client keeps polling through VERIFY_UNAVAILABLE, bounded", async () => {
@@ -1731,12 +1748,30 @@ describe("F-01: the wallet stays a plain System account (no Assign/Allocate, eve
     expect(unknown.state.orders.get(unknown.b.orderId)?.status).toBe("pending");
   });
 
-  it("confirm: a landed Assign of the wallet fails the order, records nothing and alerts", async () => {
+  it("L-02: a landed Assign of the wallet: recorded once, flagged WALLET_OWNER, alerted, never failed", async () => {
     const r = await confirmWith(landedWith((t, w) => ({ innerSystemOps: [...(t.innerSystemOps ?? []), { type: "assign", target: w }] })));
-    expect(r.res).toBe("TX_REJECTED");
-    expect(r.state.copies.size).toBe(0);
-    expect(r.state.orders.get(r.b.orderId)?.status).toBe("failed");
+    expect(r.res).toBe("OK");
+    expect(r.state.copies.size).toBe(1);
+    expect(r.state.orders.get(r.b.orderId)?.status).toBe("confirmed");
+    expect(r.state.orders.get(r.b.orderId)?.reviewFlag).toBe("WALLET_OWNER");
     expect(r.alerts.join("\n")).toContain("WALLET_OWNER");
+  });
+
+  it("L-02: an unreadable landed inner System instruction: recorded, flagged SYSTEM_CPI; several findings are all flagged", async () => {
+    const r = await confirmWith(landedWith((t) => ({ innerSystemOps: [...(t.innerSystemOps ?? []), { type: "unknown", target: null }] })));
+    expect(r.res).toBe("OK");
+    expect(r.state.orders.get(r.b.orderId)?.reviewFlag).toBe("SYSTEM_CPI");
+    const evil = Keypair.generate().publicKey.toBase58();
+    const both = await confirmWith(
+      landedWith((t, w) => ({
+        innerPrograms: [...(t.innerPrograms ?? []), evil],
+        innerSystemOps: [...(t.innerSystemOps ?? []), { type: "assign", target: w }],
+        tokenAuthorityOps: [{ type: "approve", target: associatedTokenAddress(w) }],
+      })),
+    );
+    expect(both.res).toBe("OK");
+    expect(both.state.copies.size).toBe(1);
+    expect(both.state.orders.get(both.b.orderId)?.reviewFlag).toBe("UNEXPECTED_CPI,WALLET_OWNER,USDC_AUTHORITY");
   });
 
   it("J-07: a wallet re-owned LATER (not by this tx) doesn't un-record the copy; unknown System ops stay retryable", async () => {
@@ -1980,11 +2015,14 @@ describe("Launch cap (MAX_STAKE_USDC) is enforced at quote, build, simulation an
     await stakeOf(u, "7.00");
     const state = createCopyMemoryState();
     const { b } = await quoteAndBuild(deps({ state }), u); // cap 1000 at build
-    const d = deps({ state, maxStakeCapBase: CAP5 });
+    const alerts: string[] = [];
+    const d = deps({ state, maxStakeCapBase: CAP5, alert: (m: string) => alerts.push(m) });
     const req = post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
-    expect(await code(confirmOrder(d, req, "copy"))).toBe("OVER_LIMIT");
-    expect(state.copies.size).toBe(0);
-    expect(state.orders.get(b.orderId)?.status).toBe("failed");
+    // L-02: it landed, so the cap can't undo it: recorded once at the order's amount, flagged + alerted.
+    expect(await code(confirmOrder(d, req, "copy"))).toBe("OK");
+    expect(state.copies.size).toBe(1);
+    expect(state.orders.get(b.orderId)?.reviewFlag).toBe("OVER_LIMIT");
+    expect(alerts.join("\n")).toMatch(/OVER_LIMIT .*limit 5\.00 USDC/);
   });
 
   it("confirm: a missing cap keeps the copy pending and retryable, never unlimited", async () => {
