@@ -248,6 +248,13 @@ crons (see Batch 2), open the copy link from the log, Review and sign, then visi
 
 1. Create a Supabase project. Apply the SQL in `supabase/migrations/` in order
    (Supabase CLI: `supabase db push`, or paste each file into the SQL editor).
+   **Deploy order for an existing database:** apply migrations 0008 → 0013, then 0014 (stake
+   ceiling) and 0015 (sweep attempts / bounded re-sends), and only then deploy the app (the app
+   calls `claim_broadcast_sweep` / `note_send_attempt` and writes columns those migrations add).
+   Re-runs: 0012 and 0015 are safe to re-run. 0008, 0013 and 0014 are not (plain `add column` /
+   `add constraint`; they error on a second run instead of changing anything), so apply each once.
+   0008 was also edited after first release: a database that ran its first version is repaired by
+   0012, not by re-running 0008.
 2. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `PANTA_API_KEY`, `SOLANA_RPC_URL`,
    `SESSION_SECRET`, `APP_URL`, and `MOCK_PANTA=false`.
 3. Note: Panta docs say both `pk_test_` and `pk_live_` keys are accepted on the same

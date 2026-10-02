@@ -26,12 +26,19 @@ export type ConfirmationState = "confirmed" | "failed" | "pending" | "expired";
 export interface Chain extends ChainReader {
   /** Broadcast signed bytes on our RPC. Returns the signature. */
   send(raw: Uint8Array): Promise<string>;
-  /** Wait (bounded) for `confirmed` commitment. */
+  /**
+   * Wait (bounded) for `confirmed` commitment. Always reads the status at least once (G-01),
+   * even with timeoutMs 0. "expired" = past lastValidBlockHeight, or (when that is unknown)
+   * the message's blockhash is no longer valid (G-02), and still no status on a second read.
+   */
   waitForConfirmation(
     signature: string,
     lastValidBlockHeight: number | null,
     timeoutMs: number,
+    blockhash?: string,
   ): Promise<ConfirmationState>;
+  /** G-03: whether a blockhash can still land a transaction (bounded re-sends only while true). */
+  isBlockhashValid(blockhash: string): Promise<boolean>;
   /** The transaction as it landed on chain (confirmed commitment), or null if not found yet. */
   getLandedTransaction(signature: string): Promise<LandedTx | null>;
   /** F-01: the wallet account's current owner, executable flag and data length (null = no account). */

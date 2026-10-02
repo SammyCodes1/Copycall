@@ -158,24 +158,34 @@ export const rpcChain: Chain = {
     });
   },
 
-  async waitForConfirmation(signature, lastValidBlockHeight, timeoutMs): Promise<ConfirmationState> {
+  async waitForConfirmation(signature, lastValidBlockHeight, timeoutMs, blockhash): Promise<ConfirmationState> {
     const conn = getConnection();
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const { value } = await conn.getSignatureStatuses([signature], { searchTransactionHistory: true });
-      const st = value[0];
-      if (st?.err) return "failed";
-      if (st?.confirmationStatus === "confirmed" || st?.confirmationStatus === "finalized") return "confirmed";
-      if (lastValidBlockHeight !== null && (await conn.getBlockHeight("confirmed")) > lastValidBlockHeight) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    const read = async () => (await conn.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+    const landed = (st: Awaited<ReturnType<typeof read>>): ConfirmationState | null =>
+      st?.err ? "failed" : st?.confirmationStatus === "confirmed" || st?.confirmationStatus === "finalized" ? "confirmed" : null;
+    // G-01: always at least one status read, even with a zero budget (the cron sweep passes 0).
+    for (;;) {
+      const now = landed(await read());
+      if (now) return now;
+      // G-02: expiry from the block height when we have it, else from the blockhash itself.
+      const expired =
+        lastValidBlockHeight !== null
+          ? (await conn.getBlockHeight("confirmed")) > lastValidBlockHeight
+          : blockhash
+            ? !(await conn.isBlockhashValid(blockhash, { commitment: "confirmed" })).value
+            : false;
+      if (expired) {
         // B3-06: the tx may have landed between the two reads. Ask once more before saying expired.
-        const again = (await conn.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
-        if (again?.err) return "failed";
-        if (again?.confirmationStatus === "confirmed" || again?.confirmationStatus === "finalized") return "confirmed";
-        return "expired";
+        return landed(await read()) ?? "expired";
       }
+      if (Date.now() + 1000 >= deadline) return "pending";
       await sleep(1000);
     }
-    return "pending";
+  },
+
+  async isBlockhashValid(blockhash) {
+    return (await getConnection().isBlockhashValid(blockhash, { commitment: "confirmed" })).value === true;
   },
 
   async getLandedTransaction(signature) {

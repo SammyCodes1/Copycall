@@ -27,6 +27,13 @@ import {
   USDC_MINT,
   associatedTokenAddress,
 } from "../solana-constants";
+
+/** A random but canonical (S < L) 64-byte signature, as a real wallet produces (G-07). */
+function mockSignature(): string {
+  const b = randomBytes(64);
+  b[63] &= 0x0f; // S < 2^252 < L
+  return bs58.encode(b);
+}
 import { anchorDiscriminator, type AccountSnapshot, type InnerSystemOp, type SimulationResult } from "../tx-guard";
 
 /** Fake program id used in mock instructions (never a real program). */
@@ -379,6 +386,10 @@ export function createMockChain(): MockChain {
       return t.err ? "failed" : "confirmed";
     },
 
+    async isBlockhashValid() {
+      return true;
+    },
+
     async getLandedTransaction(signature) {
       const t = state.landed.get(signature);
       return t
@@ -401,11 +412,11 @@ export function createMockChain(): MockChain {
 
     async simulateSignAndSend(messageBytes) {
       const message = VersionedMessage.deserialize(messageBytes);
-      return land(message, bs58.encode(randomBytes(64)), true);
+      return land(message, mockSignature(), true);
     },
 
     landForeign(message, err = null) {
-      const sig = bs58.encode(randomBytes(64));
+      const sig = mockSignature();
       state.landed.set(sig, { err, message, signatures: [sig], simulated: false });
       return sig;
     },

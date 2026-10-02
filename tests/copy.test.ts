@@ -20,6 +20,8 @@ import {
   myPositions,
   quoteCopy,
   resetFeeModelAlerts,
+  MAX_SENDS,
+  SWEEP,
   sweepBroadcastOrders,
   type FlowDeps,
 } from "@/lib/copy-core";
@@ -41,6 +43,8 @@ import { USDC_MINT, associatedTokenAddress, baseToUsdc, usdcToBase } from "@/lib
 import type { StoredTrade } from "@/lib/data-store";
 import type { LandedTx } from "@/lib/chain";
 import { checkInnerSystemOps, innerSystemOps, type SimulationResult } from "@/lib/tx-guard";
+import { ED25519_L } from "@/lib/ed25519";
+import type { PendingOrder } from "@/lib/copy-store";
 import { apiRequest, signedInUser } from "./helpers/session";
 
 let trade: StoredTrade;
@@ -1913,5 +1917,298 @@ describe("Launch cap (MAX_STAKE_USDC) is enforced at quote, build, simulation an
     const b = await buildClaimTx(d, post("/cb", { marketId: win.marketId }, u));
     const req = post("/cc", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u);
     expect(await confirmOrder(d, req, "claim")).toMatchObject({ status: "confirmed" });
+  });
+});
+
+describe("Addendum G: broadcast liveness, definite rejections, bounded re-sends, canonical signatures", () => {
+  const chain = getSharedMockChain();
+  const later = (state: CopyMemoryState, over: Partial<FlowDeps> = {}) =>
+    deps({ state, nowMs: () => Date.now() + 5 * 60_000, resendDelayMs: 0, ...over });
+  const signedOf = async (d: FlowDeps, u: User) => {
+    const { b } = await quoteAndBuild(d, u);
+    const signedTransaction = sign(b.transaction, u.secretKey);
+    const raw = Buffer.from(signedTransaction, "base64");
+    const sig = bs58.encode(VersionedTransaction.deserialize(raw).signatures[0]);
+    return { b, sig, raw, first: { orderId: b.orderId, signedTransaction } };
+  };
+  /** A chain whose sends are recorded and (unless `land`) dropped on the floor. */
+  const dropping = (o: { land: boolean; valid?: boolean; sends: Uint8Array[]; refuse?: (n: number) => string | null }) => ({
+    ...chain,
+    send: async (raw: Uint8Array) => {
+      o.sends.push(raw);
+      const why = o.refuse?.(o.sends.length);
+      if (why) throw new Error(why);
+      return o.land ? chain.send(raw) : bs58.encode(VersionedTransaction.deserialize(raw).signatures[0]);
+    },
+    isBlockhashValid: async () => o.valid ?? true,
+  });
+
+  describe("G-01: the real-chain adapter always reads the status, even with a zero timeout", () => {
+    const setup = async () => {
+      process.env.SOLANA_RPC_URL ??= "https://rpc.example/";
+      const { Connection } = await import("@solana/web3.js");
+      const { rpcChain, getConnection } = await import("@/lib/solana");
+      // getBlockHeight is an instance arrow property in web3.js, so it's stubbed on the shared connection.
+      const height = (h: number) => vi.spyOn(getConnection(), "getBlockHeight").mockResolvedValue(h);
+      return { Connection, rpcChain, height };
+    };
+    const sig = bs58.encode(Buffer.alloc(64, 2));
+
+    it("timeout 0: one getSignatureStatuses read, and a confirmed status is returned (it used to be 'pending' unread)", async () => {
+      const { Connection, rpcChain } = await setup();
+      const st = vi
+        .spyOn(Connection.prototype, "getSignatureStatuses")
+        .mockResolvedValue({ context: { slot: 1 }, value: [{ confirmationStatus: "confirmed", err: null }] } as never);
+      try {
+        expect(await rpcChain.waitForConfirmation(sig, 100, 0)).toBe("confirmed");
+        expect(st).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("timeout 0 and past the expiry: expired only after a second status read", async () => {
+      const { Connection, rpcChain, height } = await setup();
+      const st = vi
+        .spyOn(Connection.prototype, "getSignatureStatuses")
+        .mockResolvedValue({ context: { slot: 1 }, value: [null] } as never);
+      height(500);
+      try {
+        expect(await rpcChain.waitForConfirmation(sig, 100, 0)).toBe("expired");
+        expect(st).toHaveBeenCalledTimes(2);
+        expect(await rpcChain.waitForConfirmation(sig, 900, 0)).toBe("pending");
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("G-02: no lastValidBlockHeight: expiry comes from the blockhash's validity", async () => {
+      const { Connection, rpcChain } = await setup();
+      vi.spyOn(Connection.prototype, "getSignatureStatuses").mockResolvedValue({ context: { slot: 1 }, value: [null] } as never);
+      const valid = vi.spyOn(Connection.prototype, "isBlockhashValid").mockResolvedValue({ context: { slot: 1 }, value: false });
+      try {
+        const bh = bs58.encode(Buffer.alloc(32, 7));
+        expect(await rpcChain.waitForConfirmation(sig, null, 0, bh)).toBe("expired");
+        expect(valid.mock.calls[0][0]).toBe(bh);
+        valid.mockResolvedValue({ context: { slot: 1 }, value: true });
+        expect(await rpcChain.waitForConfirmation(sig, null, 0, bh)).toBe("pending");
+        expect(await rpcChain.waitForConfirmation(sig, null, 0)).toBe("pending"); // nothing to decide from: never "expired"
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("the cron sweep on the real adapter reads the broadcast signature's status", async () => {
+      const { Connection, rpcChain, height } = await setup();
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const d = deps({ state });
+      const { first, sig: broadcast } = await signedOf(d, u);
+      const st = vi
+        .spyOn(Connection.prototype, "getSignatureStatuses")
+        .mockResolvedValue({ context: { slot: 1 }, value: [null] } as never);
+      height(0);
+      vi.spyOn(Connection.prototype, "getTransaction").mockResolvedValue(null);
+      vi.spyOn(Connection.prototype, "isBlockhashValid").mockResolvedValue({ context: { slot: 1 }, value: false });
+      state.orders.get(first.orderId)!.broadcastSignature = broadcast; // broadcast, never confirmed by the browser
+      try {
+        const r = await sweepBroadcastOrders(later(state, { chain: rpcChain }));
+        expect(r).toMatchObject({ checked: 1, pending: 1 });
+        expect(st).toHaveBeenCalled();
+        expect(st.mock.calls[0][0]).toEqual([broadcast]);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+  });
+
+  describe("G-02: definite rejections fail the order; the sweep can't be starved and gives up", () => {
+    it("a landed tx that doesn't match the order, for OUR broadcast signature, fails the order", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const o = { land: false, sends: [] as Uint8Array[] };
+      const d = deps({ state, chain: dropping(o) });
+      const { b, sig } = await signedOf(d, u);
+      expect((await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u), "copy")).status).toBe(
+        "pending",
+      );
+      // It "lands" with a different message under our signature (a lying RPC, or a hash mismatch).
+      const other = new TransactionMessage({
+        payerKey: new PublicKey(u.wallet),
+        recentBlockhash: bs58.encode(Buffer.alloc(32, 5)),
+        instructions: [],
+      }).compileToV0Message();
+      const tampered = {
+        ...dropping(o),
+        getLandedTransaction: async () => ({ ...(await chain.getLandedTransaction(chain.landForeign(other)))!, signatures: [sig] }),
+        waitForConfirmation: async () => "confirmed" as const,
+      };
+      expect(await sweepBroadcastOrders(later(state, { chain: tampered }))).toMatchObject({ checked: 1, failed: 1 });
+      expect(state.orders.get(b.orderId)?.status).toBe("failed");
+      expect(await sweepBroadcastOrders(later(state, { chain: tampered }))).toMatchObject({ checked: 0 });
+    });
+
+    it("a user pasting some other landed signature can't kill their own pending order", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const d = deps({ state });
+      const { b } = await quoteAndBuild(d, u);
+      const other = new TransactionMessage({
+        payerKey: new PublicKey(u.wallet),
+        recentBlockhash: bs58.encode(Buffer.alloc(32, 6)),
+        instructions: [],
+      }).compileToV0Message();
+      const foreign = chain.landForeign(other);
+      expect(await code(confirmOrder(d, post("/c", { orderId: b.orderId, signature: foreign }, u), "copy"))).toBe("TX_REJECTED");
+      expect(state.orders.get(b.orderId)?.status).toBe("pending");
+    });
+
+    it("an order that never lands is failed after SWEEP.maxAttempts, with an alert (and re-sent at most MAX_SENDS times)", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const o = { land: false, sends: [] as Uint8Array[] };
+      const d = deps({ state, chain: dropping(o) });
+      const { b, raw } = await signedOf(d, u);
+      await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: raw.toString("base64") }, u), "copy");
+      const alerts: string[] = [];
+      const ld = later(state, { chain: dropping(o), alert: (m) => alerts.push(m) });
+      for (let i = 1; i < SWEEP.maxAttempts; i++) expect(await sweepBroadcastOrders(ld)).toMatchObject({ checked: 1, pending: 1 });
+      expect(await sweepBroadcastOrders(ld)).toMatchObject({ checked: 1, gaveUp: 1 });
+      expect(state.orders.get(b.orderId)?.status).toBe("failed");
+      expect(alerts.join("\n")).toMatch(/sweep gave up/);
+      expect(await sweepBroadcastOrders(ld)).toMatchObject({ checked: 0 });
+      // G-03 bound: the same signed bytes, never more than MAX_SENDS broadcasts in total.
+      expect(o.sends.length).toBe(MAX_SENDS);
+      for (const x of o.sends) expect(Buffer.from(x).equals(raw)).toBe(true);
+    });
+
+    it("20+ stuck older orders don't starve a newer one that landed", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const d = deps({ state });
+      const { b, sig } = await signedOf(d, u);
+      // Broadcast and landed, but the browser never confirmed it.
+      await chain.send(Buffer.from(sign(b.transaction, u.secretKey), "base64"));
+      const real = state.orders.get(b.orderId)!;
+      real.broadcastSignature = sig;
+      for (let i = 0; i < SWEEP.limit + 5; i++) {
+        const id = randomUUID();
+        const fake = Buffer.alloc(64, i + 1);
+        fake[63] = 0;
+        state.orders.set(id, { ...real, id, createdAt: real.createdAt - 100 - i, broadcastSignature: bs58.encode(fake) } as PendingOrder);
+      }
+      const ld = later(state, { chain: { ...chain, isBlockhashValid: async () => false } });
+      const runs: number[] = [];
+      for (let i = 0; i < 3 && state.copies.size === 0; i++) runs.push((await sweepBroadcastOrders(ld)).confirmed);
+      expect(state.copies.size).toBe(1);
+      expect(runs.length).toBeLessThanOrEqual(2); // the oldest-first scan would never reach it
+      expect(state.orders.get(b.orderId)?.status).toBe("confirmed");
+    });
+  });
+
+  describe("G-03: refused or lost broadcasts are re-sent (same bytes, bounded) or reported honestly", () => {
+    it("refused then accepted: the same bytes are re-sent and the copy is recorded", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const o = { land: true, sends: [] as Uint8Array[], refuse: (n: number) => (n === 1 ? "failed to send transaction: Blockhash not found" : null) };
+      const d = deps({ state, chain: dropping(o), resendDelayMs: 0 });
+      const { first, raw } = await signedOf(d, u);
+      expect((await confirmOrder(d, post("/c", first, u), "copy")).status).toBe("confirmed");
+      expect(o.sends.length).toBe(2);
+      expect(o.sends.every((x) => Buffer.from(x).equals(raw))).toBe(true);
+    });
+
+    it("refused every time: bounded, the order is failed (never re-sent later), and 'Nothing was spent' is true", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const o = { land: true, sends: [] as Uint8Array[], refuse: () => "Transaction simulation failed: Error processing Instruction 2" };
+      const d = deps({ state, chain: dropping(o), resendDelayMs: 0 });
+      const { b, first } = await signedOf(d, u);
+      expect(await code(confirmOrder(d, post("/c", first, u), "copy"))).toBe("TX_REJECTED");
+      expect(o.sends.length).toBe(MAX_SENDS);
+      expect(state.orders.get(b.orderId)?.status).toBe("failed");
+      expect(await sweepBroadcastOrders(later(state, { chain: dropping(o) }))).toMatchObject({ checked: 0 });
+      expect(o.sends.length).toBe(MAX_SENDS);
+    });
+
+    it("refused with an expired blockhash: no blind retries", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const o = { land: true, valid: false, sends: [] as Uint8Array[], refuse: () => "failed to send transaction: Blockhash not found" };
+      const d = deps({ state, chain: dropping(o), resendDelayMs: 0 });
+      const { first } = await signedOf(d, u);
+      expect(await code(confirmOrder(d, post("/c", first, u), "copy"))).toBe("TX_REJECTED");
+      expect(o.sends.length).toBe(1);
+    });
+
+    it("an ambiguous send error (response lost) doesn't fail the order: it is verified and recorded", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const d = deps({
+        state,
+        chain: {
+          ...chain,
+          send: async (raw: Uint8Array) => {
+            await chain.send(raw);
+            throw new TypeError("fetch failed");
+          },
+        },
+      });
+      const { first } = await signedOf(d, u);
+      expect((await confirmOrder(d, post("/c", first, u), "copy")).status).toBe("confirmed");
+      expect(state.copies.size).toBe(1);
+    });
+
+    it("a lost broadcast is re-sent on the next lookup while the blockhash is valid, and then lands", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const o = { land: false, valid: true, sends: [] as Uint8Array[] };
+      const d = deps({ state, chain: dropping(o) });
+      const { b, sig, first, raw } = await signedOf(d, u);
+      expect((await confirmOrder(d, post("/c", first, u), "copy")).status).toBe("pending");
+      // Expired blockhash: a lookup never re-sends.
+      o.valid = false;
+      expect((await confirmOrder(d, post("/c", { orderId: b.orderId, signature: sig }, u), "copy")).status).toBe("pending");
+      expect(o.sends.length).toBe(1);
+      o.valid = true;
+      o.land = true;
+      expect((await confirmOrder(d, post("/c", { orderId: b.orderId, signature: sig }, u), "copy")).status).toBe("confirmed");
+      expect(o.sends.length).toBe(2);
+      expect(Buffer.from(o.sends[1]).equals(raw)).toBe(true);
+      expect(state.copies.size).toBe(1);
+    });
+  });
+
+  describe("G-07: non-canonical signatures (S >= L) are refused before verifying or storing", () => {
+    const malleate = (sig: Uint8Array): Uint8Array => {
+      let s = 0n;
+      for (let i = 63; i >= 32; i--) s = (s << 8n) | BigInt(sig[i]);
+      s += ED25519_L;
+      const out = Uint8Array.from(sig);
+      for (let i = 32; i < 64; i++) {
+        out[i] = Number(s & 255n);
+        s >>= 8n;
+      }
+      return out;
+    };
+
+    it("S + L passes tweetnacl (the attack), but confirm refuses it and notes nothing", async () => {
+      const u = await signedInUser();
+      const state = createCopyMemoryState();
+      const sends: Uint8Array[] = [];
+      const d = deps({ state, chain: { ...chain, send: async (r: Uint8Array) => (sends.push(r), chain.send(r)) } });
+      const { b } = await quoteAndBuild(d, u);
+      const tx = VersionedTransaction.deserialize(Buffer.from(sign(b.transaction, u.secretKey), "base64"));
+      const bad = malleate(tx.signatures[0]);
+      expect(nacl.sign.detached.verify(tx.message.serialize(), bad, bs58.decode(u.wallet))).toBe(true);
+      tx.signatures[0] = bad;
+      const signedTransaction = Buffer.from(tx.serialize()).toString("base64");
+      expect(await code(confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction }, u), "copy"))).toBe("TX_REJECTED");
+      expect(state.orders.get(b.orderId)?.broadcastSignature).toBeNull();
+      expect(sends.length).toBe(0);
+      expect(
+        await code(confirmOrder(d, post("/c", { orderId: b.orderId, signature: bs58.encode(bad) }, u), "copy")),
+      ).toBe("TX_REJECTED");
+    });
   });
 });

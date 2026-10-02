@@ -20,9 +20,10 @@
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { randomUUID } from "node:crypto";
-import { VersionedTransaction } from "@solana/web3.js";
+import { VersionedMessage, VersionedTransaction } from "@solana/web3.js";
 import { AuthError, assertSameOrigin, readJsonBody } from "./auth-core";
 import type { Chain } from "./chain";
+import { isCanonicalSignature, isCanonicalSignatureB58 } from "./ed25519";
 import type { CopyStore, PendingOrder } from "./copy-store";
 import type { StoredMarket, StoredTrade } from "./data-store";
 import { PantaError } from "./panta-error";
@@ -126,6 +127,8 @@ export type FlowDeps = UserDeps & {
   mock: boolean;
   nowMs?: () => number;
   confirmTimeoutMs?: number;
+  /** G-03: pause between re-sends of a refused broadcast (tests use 0). */
+  resendDelayMs?: number;
   log?: (m: string) => void;
   /** Operator alert (TX_FEE_MISMATCH and friends). Default: console.error "[ALERT] …". */
   alert?: (m: string) => void;
@@ -771,6 +774,7 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
   const now = nowSec(d);
   let signature: string;
   let simulated = false;
+  let justSent = false;
 
   if ("signedTransaction" in body) {
     let tx: VersionedTransaction;
@@ -782,7 +786,10 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     const msg = tx.message.serialize();
     // The wallet must sign OUR bytes. A wallet that edits the transaction is refused.
     if (sha256Hex(msg) !== order.messageHash) throw rejected("it doesn't match the one we checked. Nothing was sent.");
-    if (tx.signatures.length !== 1 || !nacl.sign.detached.verify(msg, tx.signatures[0], bs58.decode(session.w))) {
+    // G-07: a non-canonical S (S >= L) would pass tweetnacl and give the same tx a second signature string.
+    if (tx.signatures.length !== 1 || !isCanonicalSignature(tx.signatures[0]))
+      throw rejected("it isn't signed by your wallet. Nothing was sent.");
+    if (!nacl.sign.detached.verify(msg, tx.signatures[0], bs58.decode(session.w))) {
       throw rejected("it isn't signed by your wallet. Nothing was sent.");
     }
     signature = bs58.encode(tx.signatures[0]);
@@ -794,15 +801,8 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
         throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
       // E-02: remember the signature BEFORE broadcasting, so a lost response can still be confirmed.
       await d.copy.noteBroadcast(order.id, signature);
-      try {
-        await d.chain.send(tx.serialize());
-      } catch (err) {
-        const m = err instanceof Error ? err.message : "";
-        if (!/already (been )?processed/i.test(m)) {
-          d.log?.(`${kind} broadcast failed: ${m.slice(0, 200)}`);
-          throw rejected("the network refused it. Nothing was spent.");
-        }
-      }
+      await broadcastWithRetry(d, order, tx);
+      justSent = true;
     }
   } else if ("signature" in body) {
     // E-02: the signature we broadcast stays checkable while the tx is retrievable.
@@ -810,6 +810,7 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     if (now > order.createdAt + window)
       throw new AuthError(409, "ORDER_EXPIRED", "This order is too old to confirm. Start again.");
     signature = body.signature;
+    if (!isCanonicalSignatureB58(signature)) throw rejected("that isn't a valid signature");
     if (await d.copy.signatureUsed(signature))
       throw new AuthError(409, "SIGNATURE_USED", "This transaction was already recorded");
   } else {
@@ -821,7 +822,99 @@ export async function confirmOrder(d: FlowDeps, request: Request, kind: TxKind):
     signature = await d.chain.simulateSignAndSend(Buffer.from(order.messageBase64, "base64"));
     simulated = true;
   }
-  return verifyAndRecord(d, order, { uid: session.uid, wallet: session.w }, signature, { simulated, revive });
+  if (!simulated && !justSent && order.broadcastSignature === signature && !revive) {
+    // G-03: the signature we broadcast, looked up again: re-send the same bytes if it was lost.
+    await maybeResend(d, order, signature);
+  }
+  // G-02: rejections are only "definite" (fail the order) for the signature WE broadcast. A user
+  // pasting some other signature can't kill their own pending order.
+  const definite = order.broadcastSignature === signature || "signedTransaction" in body;
+  return verifyAndRecord(d, order, { uid: session.uid, wallet: session.w }, signature, {
+    simulated,
+    revive,
+    definite,
+  });
+}
+
+/** G-03: how many times one order's signed bytes may be broadcast in total. */
+export const MAX_SENDS = 4;
+
+/** A send error the RPC returned as a refusal (preflight), as opposed to a lost/ambiguous network error. */
+function sendRefused(m: string): boolean {
+  return /failed to send transaction|simulation failed|blockhash not found|signature verification|invalid transaction|transaction.*(rejected|refused)|insufficient/i.test(
+    m,
+  );
+}
+
+function blockhashOf(order: PendingOrder): string | null {
+  try {
+    return VersionedMessage.deserialize(Buffer.from(order.messageBase64, "base64")).recentBlockhash;
+  } catch {
+    return null;
+  }
+}
+
+async function stillValid(d: FlowDeps, order: PendingOrder): Promise<boolean> {
+  const bh = blockhashOf(order);
+  if (!bh) return false;
+  try {
+    return await d.chain.isBlockhashValid(bh);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * G-03: the first broadcast. A definite refusal is retried with the SAME signed bytes (bounded,
+ * only while the blockhash is valid). If it is still refused, the order is failed (so the sweep
+ * can never re-send it later) and the user is told nothing was spent. An ambiguous error (lost
+ * response, timeout) leaves the order pending and goes on to verification.
+ */
+async function broadcastWithRetry(d: FlowDeps, order: PendingOrder, tx: VersionedTransaction): Promise<void> {
+  const raw = tx.serialize();
+  let lastError = "";
+  while (await d.copy.noteSendAttempt(order.id, MAX_SENDS)) {
+    try {
+      await d.chain.send(raw);
+      return;
+    } catch (err) {
+      const m = err instanceof Error ? err.message : "";
+      if (/already (been )?processed/i.test(m)) return;
+      lastError = m;
+      if (!sendRefused(m)) {
+        d.log?.(`${order.kind} broadcast unclear (${m.slice(0, 120)}); verifying`);
+        return;
+      }
+      d.log?.(`${order.kind} broadcast refused: ${m.slice(0, 200)}`);
+      if (!(await stillValid(d, order))) break;
+      await new Promise((r) => setTimeout(r, d.resendDelayMs ?? 500));
+    }
+  }
+  // Refused every time (or the blockhash ran out): refused sends never reach a leader.
+  await d.copy.failOrder(order.id);
+  d.log?.(`${order.kind} broadcast gave up: ${lastError.slice(0, 120)}`);
+  throw rejected("the network refused it. Nothing was spent.");
+}
+
+/**
+ * G-03: a broadcast we can't find on chain is re-sent (same signed bytes, rebuilt from the stored
+ * message and the signature we already verified against it), while its blockhash is valid, at most
+ * MAX_SENDS times in total. Never throws: verification decides what happened.
+ */
+async function maybeResend(d: FlowDeps, order: PendingOrder, signature: string): Promise<boolean> {
+  try {
+    if (await d.chain.getLandedTransaction(signature)) return false;
+    if (!(await stillValid(d, order))) return false;
+    if (!(await d.copy.noteSendAttempt(order.id, MAX_SENDS))) return false;
+    const message = VersionedMessage.deserialize(Buffer.from(order.messageBase64, "base64"));
+    const tx = new VersionedTransaction(message, [bs58.decode(signature)]);
+    await d.chain.send(tx.serialize());
+    d.log?.(`${order.kind} re-sent ${signature.slice(0, 8)}…`);
+    return true;
+  } catch (err) {
+    d.log?.(`${order.kind} re-send ${signature.slice(0, 8)}…: ${(err instanceof Error ? err.message : "").slice(0, 120)}`);
+    return false;
+  }
 }
 
 /** VERIFY_UNAVAILABLE carries what the client needs to keep checking (E-02). */
@@ -842,11 +935,16 @@ async function verifyAndRecord(
   order: PendingOrder,
   owner: { uid: string; wallet: string },
   signature: string,
-  opts: { simulated: boolean; revive: boolean },
+  opts: { simulated: boolean; revive: boolean; definite?: boolean },
 ): Promise<ConfirmResult> {
   const { kind } = order;
   const { simulated, revive } = opts;
-  const state = await d.chain.waitForConfirmation(signature, order.lastValidBlockHeight, d.confirmTimeoutMs ?? 20_000);
+  const state = await d.chain.waitForConfirmation(
+    signature,
+    order.lastValidBlockHeight,
+    d.confirmTimeoutMs ?? 20_000,
+    blockhashOf(order) ?? undefined,
+  );
   // B3-06: "expired" is decided from a block height read after the status read; the tx may have
   // landed in between. Look it up once more before calling it expired.
   if (state === "expired" && !(await d.chain.getLandedTransaction(signature))) {
@@ -864,17 +962,24 @@ async function verifyAndRecord(
 
   const landed = await d.chain.getLandedTransaction(signature);
   if (!landed) return { status: "pending", signature };
+  // G-02: for the signature we broadcast, a landed tx that doesn't match the order is a definite
+  // rejection: fail the order so it isn't swept forever.
+  const definitely = async (e: AuthError): Promise<never> => {
+    if (opts.definite) await d.copy.failOrder(order.id);
+    throw e;
+  };
   try {
     checkMessageShape(landed.message, owner.wallet); // signer / fee payer == the order's wallet
   } catch {
-    throw rejected("it wasn't signed by your wallet");
+    await definitely(rejected("it wasn't signed by your wallet"));
   }
-  if (landed.signatures[0] !== signature) throw rejected("signature mismatch");
+  if (landed.signatures[0] !== signature) await definitely(rejected("signature mismatch"));
   if (sha256Hex(landed.message.serialize()) !== order.messageHash)
-    throw rejected("it isn't the transaction we built for you");
+    await definitely(rejected("it isn't the transaction we built for you"));
   try {
     checkLandedPrograms(landed.message, d.pantaProgramIds);
   } catch (err) {
+    if (opts.definite) await d.copy.failOrder(order.id);
     asRejection(err);
   }
   if (landed.err !== null) {
@@ -978,37 +1083,78 @@ async function verifyAndRecord(
   return { status: "confirmed", signature, reported, simulated, kind };
 }
 
-export const SWEEP = { limit: 20, minAgeSec: 60 };
-export type SweepSummary = { checked: number; confirmed: number; pending: number; failed: number; unavailable: number };
+export const SWEEP = { limit: 20, minAgeSec: 60, maxAttempts: 30, budgetMs: 60_000 };
+export type SweepSummary = {
+  checked: number;
+  confirmed: number;
+  pending: number;
+  failed: number;
+  unavailable: number;
+  /** G-02: orders failed because they hit SWEEP.maxAttempts without landing. */
+  gaveUp: number;
+  /** Orders claimed but not reached within SWEEP.budgetMs (they keep their turn order). */
+  skipped: number;
+};
 
 /**
  * E-02 cron step: pending orders whose signature we broadcast but never
  * verified (lost response, VERIFY_UNAVAILABLE, closed tab) are verified and
  * recorded server-side, with exactly the checks confirm runs.
+ * G-02: least recently swept first, each claim bumps an attempt counter, and an order that
+ * still hasn't landed after SWEEP.maxAttempts is failed (it stays revivable by signature).
+ * G-03: an order not found on chain is re-sent while its blockhash is valid (bounded).
  */
 export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
   const now = nowSec(d);
-  const orders = await d.copy.listBroadcastPending({
+  const started = Date.now();
+  const claimed = await d.copy.claimBroadcastSweep({
     limit: SWEEP.limit,
     createdBefore: now - SWEEP.minAgeSec,
     createdAfter: now - BROADCAST_LOOKUP_SEC,
+    maxAttempts: SWEEP.maxAttempts,
   });
-  const out: SweepSummary = { checked: orders.length, confirmed: 0, pending: 0, failed: 0, unavailable: 0 };
-  for (const o of orders) {
+  const out: SweepSummary = {
+    checked: claimed.length,
+    confirmed: 0,
+    pending: 0,
+    failed: 0,
+    unavailable: 0,
+    gaveUp: 0,
+    skipped: 0,
+  };
+  const alert = d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`));
+  const giveUp = async (o: PendingOrder, why: string) => {
+    await d.copy.failOrder(o.id);
+    out.gaveUp++;
+    alert(`sweep gave up on ${o.kind} ${o.id.slice(0, 8)} after ${SWEEP.maxAttempts} checks (${why})`);
+  };
+  for (const { order: o, attempts } of claimed) {
     if (!o.broadcastSignature) continue;
+    if (Date.now() - started > SWEEP.budgetMs) {
+      out.skipped++;
+      continue;
+    }
+    const last = attempts >= SWEEP.maxAttempts;
     try {
+      await maybeResend(d, o, o.broadcastSignature);
+      // G-01: timeout 0 still means one status read (see Chain.waitForConfirmation).
       const r = await verifyAndRecord(
         { ...d, confirmTimeoutMs: 0 },
         o,
         { uid: o.userId, wallet: o.wallet },
         o.broadcastSignature,
-        { simulated: false, revive: false },
+        { simulated: false, revive: false, definite: true },
       );
-      out[r.status === "confirmed" ? "confirmed" : "pending"]++;
+      if (r.status === "confirmed") out.confirmed++;
+      else if (last) await giveUp(o, "never landed");
+      else out.pending++;
     } catch (err) {
-      if (err instanceof AuthError && err.code === "VERIFY_UNAVAILABLE") out.unavailable++;
-      else out.failed++;
-      d.log?.(`sweep ${o.kind} ${o.id.slice(0, 8)}: ${err instanceof AuthError ? err.code : "error"}`);
+      const code = err instanceof AuthError ? err.code : "error";
+      if (code === "VERIFY_UNAVAILABLE") {
+        if (last) await giveUp(o, "unverifiable");
+        else out.unavailable++;
+      } else out.failed++;
+      d.log?.(`sweep ${o.kind} ${o.id.slice(0, 8)}: ${code}`);
     }
   }
   return out;

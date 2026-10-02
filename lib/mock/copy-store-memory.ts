@@ -23,10 +23,23 @@ export type CopyMemoryState = {
   orders: Map<string, PendingOrder>;
   copies: Map<string, RecordedCopy & { userId: string; orderId: string } & ReportCols>;
   claims: Map<string, RecordedClaim & { userId: string; orderId: string } & ReportCols>;
+  /** G-02: sweep attempts and a logical "last swept" clock per order. */
+  sweep: Map<string, { attempts: number; at: number }>;
+  sweepClock: number;
+  /** G-03: broadcasts of the same signed bytes per order. */
+  sends: Map<string, number>;
 };
 
 export function createCopyMemoryState(): CopyMemoryState {
-  return { cache: new Map(), orders: new Map(), copies: new Map(), claims: new Map() };
+  return {
+    cache: new Map(),
+    orders: new Map(),
+    copies: new Map(),
+    claims: new Map(),
+    sweep: new Map(),
+    sweepClock: 0,
+    sends: new Map(),
+  };
 }
 
 export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState()): CopyStore {
@@ -113,15 +126,35 @@ export function createMemoryCopyStore(s: CopyMemoryState = createCopyMemoryState
       const o = s.orders.get(orderId);
       if (o && o.status === "pending" && o.broadcastSignature === null) o.broadcastSignature = signature;
     },
-    async listBroadcastPending(p) {
-      return [...s.orders.values()]
+    async claimBroadcastSweep(p) {
+      const due = [...s.orders.values()]
         .filter(
           (o) =>
-            o.status === "pending" && o.broadcastSignature !== null && o.createdAt < p.createdBefore && o.createdAt > p.createdAfter,
+            o.status === "pending" &&
+            o.broadcastSignature !== null &&
+            o.createdAt < p.createdBefore &&
+            o.createdAt > p.createdAfter &&
+            (s.sweep.get(o.id)?.attempts ?? 0) < p.maxAttempts,
         )
-        .sort((a, b) => a.createdAt - b.createdAt)
-        .slice(0, Math.min(Math.max(p.limit, 0), 100))
-        .map((o) => ({ ...o }));
+        .sort((a, b) => {
+          const la = s.sweep.get(a.id)?.at ?? -1;
+          const lb = s.sweep.get(b.id)?.at ?? -1;
+          return la !== lb ? la - lb : a.createdAt - b.createdAt;
+        })
+        .slice(0, Math.min(Math.max(p.limit, 0), 100));
+      return due.map((o) => {
+        const prev = s.sweep.get(o.id);
+        const next = { attempts: (prev?.attempts ?? 0) + 1, at: ++s.sweepClock };
+        s.sweep.set(o.id, next);
+        return { order: { ...o }, attempts: next.attempts };
+      });
+    },
+    async noteSendAttempt(orderId, max) {
+      const o = s.orders.get(orderId);
+      const n = s.sends.get(orderId) ?? 0;
+      if (!o || o.status !== "pending" || n >= max) return false;
+      s.sends.set(orderId, n + 1);
+      return true;
     },
     async markReported(orderId) {
       const at = nowSec();

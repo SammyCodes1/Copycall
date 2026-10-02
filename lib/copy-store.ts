@@ -98,8 +98,20 @@ export interface CopyStore {
   failOrder(orderId: string): Promise<void>;
   /** E-02: remember the signature we are about to broadcast (pending orders only, first one wins). */
   noteBroadcast(orderId: string, signature: string): Promise<void>;
-  /** E-02: pending orders with a broadcast signature, created in (createdAfter, createdBefore). */
-  listBroadcastPending(p: { limit: number; createdBefore: number; createdAfter: number }): Promise<PendingOrder[]>;
+  /**
+   * G-02: claim up to `limit` pending orders with a broadcast signature, created in
+   * (createdAfter, createdBefore) and swept fewer than `maxAttempts` times, least recently
+   * swept first (never-swept first). Bumps each one's attempt counter atomically and
+   * returns the new count (concurrent sweeps never share an order).
+   */
+  claimBroadcastSweep(p: {
+    limit: number;
+    createdBefore: number;
+    createdAfter: number;
+    maxAttempts: number;
+  }): Promise<{ order: PendingOrder; attempts: number }[]>;
+  /** G-03: count one more broadcast of this pending order's signed bytes; false if over `max` (or not pending). */
+  noteSendAttempt(orderId: string, max: number): Promise<boolean>;
   /** After POST /trades/: copies.status = reported, reported_at = now (claims: reported_at). */
   markReported(orderId: string): Promise<void>;
   /** Has the copy/claim recorded for this order been reported to Panta? */

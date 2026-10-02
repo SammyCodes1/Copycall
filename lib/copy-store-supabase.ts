@@ -180,18 +180,33 @@ export const supabaseCopyStore: CopyStore = {
       .is("broadcast_signature", null);
     if (error) fail("note broadcast");
   },
-  async listBroadcastPending(p) {
-    const { data, error } = await getDb()
-      .from("pending_orders")
-      .select(ORDER_COLS)
-      .eq("status", "pending")
-      .not("broadcast_signature", "is", null)
-      .lt("created_at", iso(p.createdBefore))
-      .gt("created_at", iso(p.createdAfter))
-      .order("created_at", { ascending: true })
-      .limit(Math.min(Math.max(p.limit, 0), 100));
-    if (error) fail("list broadcast pending");
-    return ((data ?? []) as unknown as OrderRow[]).map(toOrder);
+  async claimBroadcastSweep(p) {
+    const db = getDb();
+    const { data, error } = await db.rpc("claim_broadcast_sweep", {
+      p_limit: p.limit,
+      p_created_before: iso(p.createdBefore),
+      p_created_after: iso(p.createdAfter),
+      p_max_attempts: p.maxAttempts,
+    });
+    if (error) fail("claim broadcast sweep");
+    const claimed = ((data ?? []) as { order_id: unknown; attempts: unknown }[]).map((r) => ({
+      id: String(r.order_id),
+      attempts: Number(r.attempts),
+    }));
+    if (claimed.length === 0) return [];
+    // Numerics are read as text (E-01), so the orders are fetched with the usual select.
+    const rows = await db.from("pending_orders").select(ORDER_COLS).in("id", claimed.map((c) => c.id));
+    if (rows.error) fail("claim broadcast sweep");
+    const byId = new Map(((rows.data ?? []) as unknown as OrderRow[]).map((r) => [String(r.id), toOrder(r)]));
+    return claimed.flatMap((c) => {
+      const order = byId.get(c.id);
+      return order ? [{ order, attempts: c.attempts }] : [];
+    });
+  },
+  async noteSendAttempt(orderId, max) {
+    const { data, error } = await getDb().rpc("note_send_attempt", { p_order_id: orderId, p_max: max });
+    if (error) fail("note send attempt");
+    return data === true;
   },
   async markReported(orderId) {
     const db = getDb();

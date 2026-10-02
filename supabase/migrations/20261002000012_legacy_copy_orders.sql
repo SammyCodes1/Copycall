@@ -11,6 +11,16 @@ alter table public.pending_orders validate constraint pending_orders_claim_no_ou
 
 -- E-10: max_usdc_out is the guard's cap (the stake). A copy's recorded amount
 -- (the simulated debit) never exceeds it.
-alter table public.pending_orders
-  add constraint pending_orders_copy_within_cap
-  check (kind <> 'copy' or max_usdc_out is null or amount_usdc <= max_usdc_out);
+-- G-08: guarded so the whole file can be re-run safely (the UPDATE and VALIDATEs already are).
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conname = 'pending_orders_copy_within_cap' and conrelid = 'public.pending_orders'::regclass
+  ) then
+    alter table public.pending_orders
+      add constraint pending_orders_copy_within_cap
+      check (kind <> 'copy' or max_usdc_out is null or amount_usdc <= max_usdc_out);
+  end if;
+end;
+$$;
