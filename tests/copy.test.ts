@@ -13,7 +13,15 @@ import { POST as buildRoute } from "@/app/api/copy/[tradeId]/build/route";
 import { POST as confirmRoute } from "@/app/api/copy/confirm/route";
 import { GET as positionsRoute } from "@/app/api/positions/route";
 import { AuthError } from "@/lib/auth-core";
-import { buildClaimTx, buildCopy, confirmOrder, myPositions, quoteCopy, type FlowDeps } from "@/lib/copy-core";
+import {
+  buildClaimTx,
+  buildCopy,
+  confirmOrder,
+  myPositions,
+  quoteCopy,
+  resetFeeModelAlerts,
+  type FlowDeps,
+} from "@/lib/copy-core";
 import { ensureMockData, getDataStore, getUserDeps } from "@/lib/data";
 import { MOCK_PROGRAM_ID, getSharedMockChain } from "@/lib/mock/chain-mock";
 import {
@@ -1085,5 +1093,61 @@ describe("B3-07: Panta reports are retried, bounded, and reported honestly", () 
     at(REPORT_RETRY.baseGapSec);
     expect(await runReportRetries({ copy: d.copy, panta: d.panta })).toMatchObject({ claimed: 1, reported: 1 });
     expect(await d.copy.isReported(b.orderId)).toBe(true);
+  });
+});
+
+describe("D-04: copies record the simulated debit exactly", () => {
+  it("records and shows 4.995 when the simulation debits 4.995 (never rounded to 4.99 or the stake)", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const chain = getSharedMockChain();
+    const ata = associatedTokenAddress(u.wallet, USDC_MINT);
+    // A simulation that debits 0.005 less than the stake (e.g. the program refunds dust).
+    const odd = {
+      ...chain,
+      simulate: async (t: VersionedTransaction, addrs: string[]) => {
+        const r = await chain.simulate(t, addrs);
+        const i = addrs.indexOf(ata);
+        if (i >= 0 && r.accounts[i]) {
+          const data = Buffer.from(r.accounts[i]!.data);
+          data.writeBigUInt64LE(data.readBigUInt64LE(64) + 5_000n, 64);
+          r.accounts[i] = { ...r.accounts[i]!, data };
+        }
+        return r;
+      },
+    };
+    const d = deps({ state, chain: odd });
+    const { q, b } = await quoteAndBuild(d, u);
+    expect(b.checks.usdcOut).toBe("4.995");
+    expect(state.orders.get(b.orderId)).toMatchObject({ amountUsdc: "4.995", feeUsdc: q.feeUsdc });
+    await confirmOrder(d, post("/c", { orderId: b.orderId, signedTransaction: sign(b.transaction, u.secretKey) }, u), "copy");
+    expect((await d.copy.listCopies(u.userId, 5))[0]).toMatchObject({ amountUsdc: "4.995" });
+  });
+});
+
+describe("D-05: a fee-on-top shape against the pin alerts; old cached views are not served", () => {
+  it("alerts once per process on a quote that contradicts the pinned model", async () => {
+    resetFeeModelAlerts();
+    const alerts: string[] = [];
+    const d = deps({ feeModel: "on_top", alert: (m: string) => alerts.push(m) }); // the mock quotes inclusive
+    const u = await signedInUser();
+    expect(await code(quoteCopy(d, get("/q", u), trade.id))).toBe("FEE_MODEL_MISMATCH");
+    const u2 = await signedInUser();
+    expect(await code(quoteCopy(d, get("/q", u2), trade.id))).toBe("FEE_MODEL_MISMATCH");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatch(/PANTA_FEE_MODEL=on_top/);
+    expect(alerts[0]).toMatch(/panta-fee-model\.mjs/);
+  });
+
+  it("ignores a quote view cached in the previous deploy's shape", async () => {
+    const u = await signedInUser();
+    const state = createCopyMemoryState();
+    const d = deps({ state });
+    const s = await getDataStore().getSettings(u.userId);
+    const old = { view: { quoteToken: "old", amountUsdc: s!.maxStakeUsdc }, stake: s!.maxStakeUsdc, slippageBps: s!.slippageBps };
+    await d.copy.cachePut(`quote:${u.userId}:${trade.id}`, old, Math.floor(Date.now() / 1000) + 10);
+    const q = await quoteCopy(d, get("/q", u), trade.id);
+    expect(q.quoteToken).not.toBe("old");
+    expect(q).toHaveProperty("feeModel");
   });
 });

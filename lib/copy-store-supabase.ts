@@ -4,12 +4,15 @@ import "server-only";
  * rethrown as generic messages so no SQL or row data leaks.
  */
 import type { CompleteResult, CopyStore, PendingOrder, RecordedClaim, RecordedCopy, ReportJob } from "./copy-store";
+import { toMicro, usdcExact } from "./copy-math";
 import { getDb } from "./db";
 import type { TradeSide } from "./trades";
 
 const iso = (sec: number) => new Date(sec * 1000).toISOString();
 const sec = (v: string) => Math.floor(Date.parse(v) / 1000);
 const dec = (v: string | number, dp: number) => Number(v).toFixed(dp);
+/** numeric(18,6) -> exact USDC text ("5.00", "4.995"), via base units. */
+const exact = (v: string | number) => usdcExact(toMicro(Number(v).toFixed(6)));
 
 function fail(what: string): never {
   throw new Error(`Database error: ${what}`);
@@ -206,8 +209,8 @@ export const supabaseCopyStore: CopyStore = {
       leaderTradeId: r.leader_trade_id,
       marketId: r.market_id,
       side: r.side,
-      amountUsdc: dec(r.amount_usdc, 2),
-      feeUsdc: r.fee_usdc === null || r.fee_usdc === undefined ? null : dec(r.fee_usdc, 2),
+      amountUsdc: exact(r.amount_usdc), // D-04: exact debit, not rounded to cents
+      feeUsdc: r.fee_usdc === null || r.fee_usdc === undefined ? null : exact(r.fee_usdc),
       shares: dec(r.shares ?? 0, 2),
       signature: r.signature,
       status: r.status,

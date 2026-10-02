@@ -211,7 +211,7 @@ export function CopyFlow({ tradeId, base, nowSec, mock, sessionWallet, closed }:
         return (
           <>
             <p className="mb-3 text-sm leading-6 text-fg-muted">
-              Next, Copycall builds this exact order and checks it. Then your wallet asks you to approve{" "}
+              Next, Copycall builds this exact order and checks it. Then your wallet asks you to approve up to{" "}
               <span className="num text-fg">{totalText}</span>. Any transaction that would move more than{" "}
               <span className="num text-fg">{quote?.maxUsdcOut} USDC</span> is refused. Copycall never holds your
               funds.
@@ -249,7 +249,10 @@ export function CopyFlow({ tradeId, base, nowSec, mock, sessionWallet, closed }:
               <p className="text-base font-semibold text-fg">Copy recorded</p>
               <p className="mt-1 text-sm leading-6 text-fg-muted">
                 You bought {base.side === "yes" ? "YES" : "NO"} for{" "}
-                <span className="num text-fg">{totalText}</span>. Confirmed on{" "}
+                <span className="num text-fg">
+                  {phase.built.checks.usdcOut} USDC{amounts ? ` (${amounts.fee} USDC fee included)` : ""}
+                </span>
+                . Confirmed on{" "}
                 {phase.result.simulated ? "the mock chain" : "Solana"}
                 {phase.result.reported ? " and reported to Panta." : ". Panta attribution will be retried."}
               </p>

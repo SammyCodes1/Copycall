@@ -149,6 +149,13 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    The model and deposit live on the quote record in `api_cache`; build uses only those. The static check counts
    the decoded deposit plus every top-level transfer (and the fee, for on top); the simulation measures the real
    USDC decrease. Slippage costs shares, never extra USDC.
+   A copy records the **simulated** USDC debit exactly (6 dp, e.g. `4.995`) and the fee at 6 dp; the review says
+   "approve up to" the total and the result shows the checked figure (D-04).
+
+   **If Panta's real fee model isn't the pinned one (D-05):** every quote is refused with `FEE_MODEL_MISMATCH`
+   (or `FEE_MODEL_UNKNOWN`). This affects availability, not funds: nothing is built or signed. The first such quote
+   per process logs an `[ALERT]` naming the pin and the reading; run `scripts/panta-fee-model.mjs` and fix
+   `PANTA_FEE_MODEL`. Cached quote views carry a shape version, so a deploy never serves an old-shape view.
 
    **Find the model for a deployment** with one quote-only call (never builds or signs; the key is read from
    `PANTA_API_KEY` and never printed):

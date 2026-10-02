@@ -47,7 +47,6 @@ import {
   SYSTEM_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
-  baseToUsdc,
   usdcToBase,
 } from "./solana-constants";
 import {
@@ -210,7 +209,29 @@ type QuoteToken = {
   validUntil: number;
 };
 
-type CachedQuote = { view: QuoteView; stake: string; slippageBps: number };
+/**
+ * D-05: bump when QuoteView's shape changes, so a view cached by the previous
+ * deploy (≤ QUOTE_CACHE_SEC old) is never served in the old shape.
+ */
+export const QUOTE_VIEW_VERSION = 2;
+type CachedQuote = { v: number; view: QuoteView; stake: string; slippageBps: number };
+
+/** D-05: alert once per process and (pin, reading) when Panta's quotes don't match the pinned fee model. */
+const feeModelAlerted = new Set<string>();
+function alertFeeModel(d: FlowDeps, code: string, detected: string | undefined) {
+  const key = `${d.feeModel}:${code}:${detected ?? "?"}`;
+  if (feeModelAlerted.has(key)) return;
+  feeModelAlerted.add(key);
+  const alert = d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`));
+  alert(
+    `Panta quote reads fee model ${detected ?? "?"} (${code}) but PANTA_FEE_MODEL=${d.feeModel}. ` +
+      "Every copy is refused until this is checked: run scripts/panta-fee-model.mjs.",
+  );
+}
+/** Tests only. */
+export function resetFeeModelAlerts() {
+  feeModelAlerted.clear();
+}
 
 async function settingsFor(d: FlowDeps, uid: string) {
   const s = await d.data.getSettings(uid);
@@ -245,7 +266,12 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
 
   const cacheKey = `quote:${session.uid}:${trade.id}`;
   const cached = await d.copy.cacheGet<CachedQuote>(cacheKey, now);
-  if (cached && cached.stake === settings.maxStakeUsdc && cached.slippageBps === settings.slippageBps)
+  if (
+    cached &&
+    cached.v === QUOTE_VIEW_VERSION &&
+    cached.stake === settings.maxStakeUsdc &&
+    cached.slippageBps === settings.slippageBps
+  )
     return cached.view;
 
   // Quote with the stake, detect the fee model, and re-quote smaller if the fee is on top
@@ -272,6 +298,7 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
   } catch (err) {
     if (!(err instanceof FeeModelError)) throw err;
     d.log?.(`copy quote refused: ${err.code}${err.detected ? ` (${err.detected})` : ""}`);
+    if (err.code === "FEE_MODEL_MISMATCH" || err.code === "FEE_MODEL_UNKNOWN") alertFeeModel(d, err.code, err.detected ?? undefined);
     if (err.code === "QUOTE_MISMATCH") throw new AuthError(502, "PANTA_ERROR", err.message);
     throw new AuthError(502, err.code, err.message);
   }
@@ -331,7 +358,7 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
   await d.copy.cachePut(`qtok:${token}`, tok, validUntil);
   await d.copy.cachePut(
     cacheKey,
-    { view, stake: settings.maxStakeUsdc, slippageBps: settings.slippageBps } satisfies CachedQuote,
+    { v: QUOTE_VIEW_VERSION, view, stake: settings.maxStakeUsdc, slippageBps: settings.slippageBps } satisfies CachedQuote,
     now + QUOTE_CACHE_SEC,
   );
   return view;
@@ -425,6 +452,8 @@ async function assembleAndStore(
   const now = nowSec(d);
   const order = await d.copy.createPendingOrder({
     ...a.order,
+    // D-04: a copy records what the simulation actually debited (exact, 6 dp), not the stake.
+    ...(a.kind === "copy" ? { amountUsdc: usdcExact(sim.usdcDecrease) } : {}),
     userId: a.uid,
     wallet: a.wallet,
     kind: a.kind,
@@ -443,7 +472,7 @@ async function assembleAndStore(
     checks: {
       feePayer: a.wallet,
       programs: [...new Set(invokedPrograms(tx.message).map((p) => programLabel(d, p)))],
-      usdcOut: baseToUsdc(sim.usdcDecrease),
+      usdcOut: usdcExact(sim.usdcDecrease), // exact (B3-09): never rounded down
       maxUsdcOut: usdcExact(a.maxUsdcOutBase),
       otherAccountsChecked: Math.max(0, sim.accountsChecked - 1),
     },
@@ -542,8 +571,8 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
     order: {
       leaderTradeId: trade.id,
       side: trade.side,
-      amountUsdc: usdcExact(outflow), // total that leaves the wallet, fee included
-      feeUsdc: tok.quote.feeUsdc,
+      amountUsdc: usdcExact(outflow), // replaced by the simulated debit in assembleAndStore (D-04)
+      feeUsdc: usdcExact(fee), // exact, 6 dp (D-04)
       feeModel: model,
       maxUsdcOut: usdcExact(maxOut),
       shares: b.expectedShares,

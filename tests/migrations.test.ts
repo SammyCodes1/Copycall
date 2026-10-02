@@ -397,6 +397,21 @@ describe("supabase migrations", () => {
       expect(copies).toEqual([{ signature: "sigA", status: "confirmed" }]);
       expect((await db.query(`select 1 from public.claims where signature = 'sigC'`)).rows).toHaveLength(1);
 
+      // D-04: copies keep the exact 6-dp debit.
+      const odd = (
+        await db.query<{ id: string }>(
+          `insert into public.pending_orders (user_id, wallet, kind, leader_trade_id, market_id, side, amount_usdc, fee_usdc, shares, message_hash, message_base64, expires_at, fee_model, max_usdc_out)
+           values ($1, 'copyW', 'copy', $2, 'mC', 'YES', 4.995, 0.105, 9.5, $3, 'AA==', now() + interval '90 seconds', 'inclusive', 5) returning id`,
+          [u, t, hash],
+        )
+      ).rows[0].id;
+      expect(await complete(odd, "sigOdd")).toBe("ok");
+      const oddRow = (
+        await db.query<{ amount_usdc: string; fee_usdc: string }>(`select amount_usdc::text, fee_usdc::text from public.copies where order_id = $1`, [odd])
+      ).rows[0];
+      expect(oddRow).toEqual({ amount_usdc: "4.995000", fee_usdc: "0.105000" });
+      await db.query(`update public.copies set reported_at = now() where order_id = $1`, [odd]);
+
       // B3-06: a failed order is only confirmed when the caller re-verified it (p_allow_failed).
       const f = await mk("copy");
       await db.query(`update public.pending_orders set status = 'failed' where id = $1`, [f]);
