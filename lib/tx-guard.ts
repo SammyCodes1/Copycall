@@ -573,6 +573,20 @@ const readAmount = (data: Buffer) => (data.length >= AMOUNT_END ? data.readBigUI
 const readKey = (data: Buffer, at: number) =>
   data.length >= at + 32 ? new PublicKey(data.subarray(at, at + 32)) : PublicKey.default;
 const USDC_MINT_BYTES = new PublicKey(USDC_MINT);
+/**
+ * F-02: SPL token account bytes 72..165 of a freshly created account: delegate None
+ * (72..108), state Initialized (108 = 1), is_native None (109..121), delegated_amount 0
+ * (121..129), close_authority None (129..165). Exactly 165 bytes (no extensions).
+ */
+export const TOKEN_ACCOUNT_LEN = 165;
+const FRESH_TAIL = (() => {
+  const b = Buffer.alloc(TOKEN_ACCOUNT_LEN - AMOUNT_END);
+  b[108 - AMOUNT_END] = 1;
+  return b;
+})();
+export function isFreshTokenAccountTail(data: Buffer): boolean {
+  return data.length === TOKEN_ACCOUNT_LEN && data.subarray(AMOUNT_END).equals(FRESH_TAIL);
+}
 const withoutAmount = (data: Buffer) => Buffer.concat([data.subarray(0, AMOUNT_START), data.subarray(AMOUNT_END)]);
 
 export type SimulationCheck = {
@@ -595,6 +609,7 @@ export type SimulationCheck = {
  *  - the USDC account keeps its owner, delegate and close authority (only the amount may change)
  *  - no other user-owned token account changes at all
  *  - SOL spent stays under MAX_SOL_SPEND_LAMPORTS
+ *  - F-02: a USDC ATA created by the transaction matches a fresh-account template
  *  - F-01: the wallet stays System-owned, non-executable, with no data, and no inner
  *    System instruction assigns, allocates or creates it
  */
@@ -640,6 +655,12 @@ export async function simulateAndCheck(
   if (usdcPre && usdcPost && !withoutAmount(usdcPre.data).equals(withoutAmount(usdcPost.data))) {
     throw new TxRejected("USDC_AUTHORITY", "Transaction changes your USDC account's owner or delegate");
   }
+  // F-02: an ATA created in this transaction must be a fresh, plain SPL Token account:
+  // no delegate, delegated amount 0, initialized, not native, no close authority.
+  if (usdcPost && usdcPost.owner !== TOKEN_PROGRAM_ID)
+    throw new TxRejected("USDC_ACCOUNT", "Your USDC account isn't an SPL Token account");
+  if (!usdcPre && usdcPost && !isFreshTokenAccountTail(usdcPost.data))
+    throw new TxRejected("USDC_NEW_ACCOUNT", "The new USDC account has a delegate, close authority or unexpected state");
   // B3-05: the account we measure really is the user's USDC account.
   if (usdcPost && (!readKey(usdcPost.data, 0).equals(USDC_MINT_BYTES) || readKey(usdcPost.data, 32).toBase58() !== wallet))
     throw new TxRejected("USDC_ACCOUNT", "Your USDC account has the wrong mint or owner");

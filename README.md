@@ -140,6 +140,9 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    stay System-owned, non-executable and data-less, and no inner System instruction may Assign, Allocate or
    Create the wallet (unclassifiable System instructions, e.g. nonce ops, are refused). Confirm re-checks the
    landed inner System instructions and the wallet's current owner; a violation fails the order and alerts.
+   **New USDC account (F-02):** if the transaction creates the user's USDC ATA, its simulated post-state must be
+   a fresh SPL Token account (165 bytes, owner = user, mint = USDC, no delegate, delegated amount 0, initialized,
+   not native, no close authority). An existing ATA may only change its amount.
    The fee must match the quote. The exact bytes are stored as a pending order (90 s).
    **Fee model:** the max stake is the hard total, fee included, and the guard's cap is the stake itself in every
    model (5.00 approved = 5.00 cap, no fee or slippage headroom). Panta's docs don't say whether the quoted fee is
