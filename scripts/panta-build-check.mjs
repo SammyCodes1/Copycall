@@ -40,6 +40,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { makeRedact } from "./redact.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pantaKey = (process.env.PANTA_API_KEY ?? "").trim();
@@ -50,34 +51,7 @@ if (pantaKey.length > 0 && pantaKey.length < MIN_KEY_LEN) {
   process.exit(1);
 }
 
-/** Secrets to strip from output: the Panta key and every sensitive piece of the RPC URL. */
-function secretsFromRpcUrl(raw) {
-  const out = [];
-  if (!raw) return out;
-  out.push(raw);
-  try {
-    const u = new URL(raw);
-    if (u.username) out.push(decodeURIComponent(u.username), u.username);
-    if (u.password) out.push(decodeURIComponent(u.password), u.password);
-    for (const [, v] of u.searchParams) if (v.length >= 4) out.push(v, encodeURIComponent(v));
-    for (const seg of u.pathname.split("/")) if (seg.length >= 8) out.push(seg);
-    out.push(`${u.origin}${u.pathname}`);
-  } catch {
-    /* not a URL: the whole string is still redacted */
-  }
-  return out;
-}
-const secrets = [...(pantaKey ? [pantaKey] : []), ...secretsFromRpcUrl(rpcUrl)]
-  .filter((s) => s.length >= 4)
-  .sort((a, b) => b.length - a.length);
-
-function redact(text) {
-  let s = String(text);
-  for (const k of secrets) s = s.split(k).join("[redacted]");
-  return s
-    .replace(/pk_(test|live)_[A-Za-z0-9_\-]+/g, "pk_$1_[redacted]")
-    .replace(/(api[-_]?key|token|secret|auth)=([^&\s"']+)/gi, "$1=[redacted]");
-}
+const redact = makeRedact(pantaKey, rpcUrl); // K-03: shared with panta-fee-model.mjs
 const out = (line) => process.stdout.write(redact(line) + "\n");
 const fail = (msg, code = 1) => {
   process.stderr.write(redact(`error: ${msg}`) + "\n");

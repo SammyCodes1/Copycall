@@ -27,10 +27,21 @@ const UNSAFE_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 /** Names that look like credentials or URLs are never printed, even in the allowed charset. */
 const SECRETISH = /(^|[._])(pk|sk)_|api.?key|secret|token|passw|bearer|helius|https?|rpc/i;
 
+/** P-01: a name sharing any run of this many characters with the Panta key is never printed. */
+const KEY_OVERLAP = 6;
+
+/** True if `name` shares a substring of KEY_OVERLAP+ characters with the key (case-insensitive). */
+function overlapsKey(name: string, key: string): boolean {
+  const n = name.toLowerCase();
+  const k = key.toLowerCase();
+  if (k.length < KEY_OVERLAP) return k.length > 0 && n.includes(k);
+  for (let i = 0; i + KEY_OVERLAP <= n.length; i++) if (k.includes(n.slice(i, i + KEY_OVERLAP))) return true;
+  return false;
+}
+
 function printableName(name: string): boolean {
   if (!FIELD_NAME.test(name) || UNSAFE_NAMES.has(name) || SECRETISH.test(name)) return false;
-  const key = (process.env.PANTA_API_KEY ?? "").trim();
-  return !(key.length >= 8 && (name.includes(key.slice(0, 8)) || key.includes(name)));
+  return !overlapsKey(name, (process.env.PANTA_API_KEY ?? "").trim());
 }
 
 /** ` fields=[a,b]` (names only, at most 10, segment <= 200 chars), or ` fields=unparsed`. */
@@ -61,7 +72,8 @@ function fieldsSegment(fields: unknown): string {
  * values are printed only when they match the strict shapes above, never raw. `code=HTTP_<status>`
  * means the error body did not parse as a Panta envelope; a parsed envelope keeps Panta's code.
  * ` fields=[a,b]` lists only the NAMES of the envelope's `fields` (never their values): each must
- * be [A-Za-z0-9_.]{1,64}, not __proto__/constructor/prototype, not credential- or URL-like; at
+ * be [A-Za-z0-9_.]{1,64}, not __proto__/constructor/prototype, not credential- or URL-like, and
+ * share no run of 6+ characters with PANTA_API_KEY (case-insensitive); at
  * most 10, segment <= 200 chars. A `fields` that is neither a plain object nor an array of
  * strings prints ` fields=unparsed`.
  */

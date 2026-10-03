@@ -92,11 +92,24 @@ describe("describeError: the envelope's `fields` (names only)", () => {
     expect(seg).toMatch(/^ fields=\[[a-z]n{40}(,[a-z]n{40})*\]$/);
   });
 
-  it("the configured Panta key never appears, even as a name", () => {
+  it("P-01: a name sharing 6+ characters with the configured key (any case, any position) is dropped", () => {
     const prev = process.env.PANTA_API_KEY;
-    process.env.PANTA_API_KEY = ["abcdefgh", "12345678"].join("");
+    process.env.PANTA_API_KEY = ["abcdefgh", "12345678", "QrStUvWx"].join("");
     try {
-      expect(d({ abcdefgh12345678: ["x"], abcdefghZZ: ["x"], side: ["x"] })).toBe(`${base} fields=[side]`);
+      const names = {
+        abcdefgh12345678: ["x"], // the key's start
+        abcdefZZ: ["x"], // first 6 only
+        zz345678Qr: ["x"], // a later chunk, not the first 8
+        xxStUvWxyy: ["x"], // the key's tail
+        ABCDEFGH: ["x"], // different case of the start
+        qrstuv: ["x"], // different case of a later chunk
+        H12345: ["x"], // mixed case across the boundary
+        abcdeZ: ["x"], // only 5 shared: kept
+        side: ["x"],
+      };
+      expect(d(names)).toBe(`${base} fields=[abcdeZ,side]`);
+      process.env.PANTA_API_KEY = process.env.PANTA_API_KEY.toUpperCase();
+      expect(d({ efgh12: ["x"], qrstuvwx: ["x"], side: ["x"] })).toBe(`${base} fields=[side]`);
     } finally {
       if (prev === undefined) delete process.env.PANTA_API_KEY;
       else process.env.PANTA_API_KEY = prev;
@@ -151,6 +164,15 @@ describe("scripts print Panta's 400 code (real mode, stubbed fetch)", () => {
       name: "a `fields` that isn't an object or a string array: fields=unparsed",
       body: JSON.stringify({ code: "INVALID_MARKET_PARAMS", fields: [{ amountUsdc: pantaKey }] }),
       expectLine: "PantaError: Panta request failed (400) code=INVALID_MARKET_PARAMS fields=unparsed",
+    },
+    {
+      name: "a message carrying the RPC URL and its pieces (K-03: redacted in both scripts)",
+      body: JSON.stringify({
+        code: "UPSTREAM",
+        message: `upstream ${rpc} user pw0rd123 path ${rpcPathKey} ${rpc.split("?")[1]} ${["tok", "en=abc123def"].join("")}`,
+      }),
+      expectLine:
+        "PantaError: upstream [redacted] [redacted] [redacted] path [redacted] api-key=[redacted] token=[redacted] code=UPSTREAM",
     },
     {
       name: "a non-JSON body (envelope didn't parse: HTTP_400)",

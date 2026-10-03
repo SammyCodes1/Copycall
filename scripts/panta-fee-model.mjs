@@ -12,7 +12,8 @@
  *   "Once" is one logical quote: lib/panta.ts retries a 429 up to 4 times, so it can
  *   be up to 5 HTTP requests (E-12).
  * - The key is read only from the server env (PANTA_API_KEY) by lib/panta.ts. It is
- *   never printed, logged or written: every line of output passes through redact().
+ *   never printed, logged or written: every line of output passes through redact()
+ *   (scripts/redact.mjs), which also strips SOLANA_RPC_URL and its pieces if it is set.
  *   A key shorter than 8 characters can't be redacted safely, so the script refuses to run.
  * - Exit 0 when the quote clearly matches inclusive or on_top, 2 when ambiguous or
  *   unknown (do not pin anything then), 1 on errors.
@@ -20,9 +21,11 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { makeRedact } from "./redact.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const secret = (process.env.PANTA_API_KEY ?? "").trim();
+const rpcUrl = (process.env.SOLANA_RPC_URL ?? "").trim();
 
 const MIN_KEY_LEN = 8;
 if (secret.length > 0 && secret.length < MIN_KEY_LEN) {
@@ -31,12 +34,12 @@ if (secret.length > 0 && secret.length < MIN_KEY_LEN) {
   process.exit(1);
 }
 
-/** Remove the key (and anything that looks like a Panta key) from text before it is shown. */
-function redact(text) {
-  let s = String(text);
-  if (secret.length >= MIN_KEY_LEN) s = s.split(secret).join("[redacted]");
-  return s.replace(/pk_(test|live)_[A-Za-z0-9_\-]+/g, "pk_$1_[redacted]");
-}
+/**
+ * K-03: the same redaction as panta-build-check.mjs: the key, anything that looks like a Panta
+ * key, and the RPC URL with its credentials, query values and path segments (in case it's in
+ * the env, e.g. from .env.local), plus api-key/token/secret/auth query values.
+ */
+const redact = makeRedact(secret, rpcUrl);
 const out = (line) => process.stdout.write(redact(line) + "\n");
 const fail = (msg, code = 1) => {
   process.stderr.write(redact(`error: ${msg}`) + "\n");
