@@ -2,6 +2,7 @@ import { authErrorResponse } from "@/lib/auth";
 import { quoteCopy } from "@/lib/copy-core";
 import { ensureMockData, json } from "@/lib/data";
 import { getFlowDeps } from "@/lib/flow";
+import { flushOpsAlerts } from "@/lib/ops-alert";
 
 export const dynamic = "force-dynamic";
 
@@ -18,5 +19,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/copy/[tradeI
     return json(await quoteCopy(getFlowDeps(), request, tradeId));
   } catch (err) {
     return authErrorResponse(err);
+  } finally {
+    await flushOpsAlerts(); // bounded (5 s per post); a no-op unless an alert was queued
   }
 }

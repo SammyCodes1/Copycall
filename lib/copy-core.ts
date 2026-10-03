@@ -83,6 +83,7 @@ import {
   type GuardContext,
   type TxKind,
 } from "./tx-guard";
+import { opsAlert, type AlertTag } from "./ops-alert";
 import { requireSession, type UserDeps } from "./user-core";
 
 export const QUOTE_RATE_LIMIT = 10; // per user per minute (addendum H)
@@ -134,8 +135,11 @@ export type FlowDeps = UserDeps & {
   /** G-03: pause between re-sends of a refused broadcast (tests use 0). */
   resendDelayMs?: number;
   log?: (m: string) => void;
-  /** Operator alert (TX_FEE_MISMATCH and friends). Default: console.error "[ALERT] …". */
-  alert?: (m: string) => void;
+  /**
+   * Operator alert (TX_FEE_MISMATCH and friends). Default: opsAlert (logs "[ALERT] …" and, if
+   * OPS_ALERT_WEBHOOK_URL is set, posts a sanitized line built only from `tag`).
+   */
+  alert?: (m: string, tag?: AlertTag) => void;
 };
 
 const nowSec = (d: FlowDeps) => Math.floor((d.nowMs?.() ?? Date.now()) / 1000);
@@ -264,10 +268,11 @@ function alertFeeModel(d: FlowDeps, code: string, detected: string | undefined) 
   const key = `${d.feeModel}:${code}:${detected ?? "?"}`;
   if (feeModelAlerted.has(key)) return;
   feeModelAlerted.add(key);
-  const alert = d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`));
+  const alert = d.alert ?? opsAlert;
   alert(
     `Panta quote reads fee model ${detected ?? "?"} (${code}) but PANTA_FEE_MODEL=${d.feeModel}. ` +
       "Every copy is refused until this is checked: run scripts/panta-fee-model.mjs.",
+    { event: "FEE_MODEL", code },
   );
 }
 /** Tests only. */
@@ -1117,11 +1122,11 @@ async function maybeResend(d: FlowDeps, order: PendingOrder, signature: string):
 
 /** J-07: an alert at most once per key per process (the sweep re-checks every run). */
 const alerted = new Set<string>();
-function alertOnce(d: FlowDeps, key: string, m: string): void {
+function alertOnce(d: FlowDeps, key: string, m: string, tag: AlertTag): void {
   if (alerted.has(key)) return;
   if (alerted.size > 10_000) alerted.clear();
   alerted.add(key);
-  (d.alert ?? ((x: string) => console.error(`[ALERT] ${x}`)))(m);
+  (d.alert ?? opsAlert)(m, tag);
 }
 
 /** VERIFY_UNAVAILABLE carries what the client needs to keep checking (E-02). */
@@ -1154,6 +1159,7 @@ async function verifyAndRecord(
       d,
       `review:${code}:${order.id}`,
       `${kind} confirm ${code} for ${signature.slice(0, 8)}… (wallet ${owner.wallet.slice(0, 6)}…, order ${order.id.slice(0, 8)}): ${detail}; recorded and flagged for review`,
+      { event: "REVIEW_FLAGGED", code, kind, id: order.id },
     );
   };
   const state = await d.chain.waitForConfirmation(
@@ -1254,7 +1260,12 @@ async function verifyAndRecord(
     checkInnerSystemOps(topLevelOps, owner.wallet);
     checkTokenAuthorityOps(topLevelTokenOps, usdcAta);
   } catch (err) {
-    alertOnce(d, `toplevel:${order.id}`, `${kind} confirm: top-level System check ${err instanceof TxRejected ? err.code : "error"} for ${signature.slice(0, 8)}…; not recorded yet`);
+    alertOnce(d, `toplevel:${order.id}`, `${kind} confirm: top-level System check ${err instanceof TxRejected ? err.code : "error"} for ${signature.slice(0, 8)}…; not recorded yet`, {
+      event: "TOPLEVEL_CHECK",
+      code: err instanceof TxRejected ? err.code : undefined,
+      kind,
+      id: order.id,
+    });
     throw verifyUnavailable(order.id, signature);
   }
   try {
@@ -1262,7 +1273,11 @@ async function verifyAndRecord(
   } catch (err) {
     // L-02: WALLET_OWNER / SYSTEM_CPI on what landed: record + flag, never fail.
     if (!(err instanceof TxRejected)) {
-      alertOnce(d, `system-check:${order.id}`, `${kind} confirm: the inner System check errored for ${signature.slice(0, 8)}…; not recorded yet`);
+      alertOnce(d, `system-check:${order.id}`, `${kind} confirm: the inner System check errored for ${signature.slice(0, 8)}…; not recorded yet`, {
+        event: "SYSTEM_CHECK_ERROR",
+        kind,
+        id: order.id,
+      });
       throw verifyUnavailable(order.id, signature);
     }
     flag(err.code, err.message.slice(0, 160));
@@ -1281,7 +1296,12 @@ async function verifyAndRecord(
     // instruction, any other code, a non-TxRejected error) is unknown: pending, alerted once.
     if (!(err instanceof TxRejected) || err.code !== "USDC_AUTHORITY") {
       const what = err instanceof TxRejected ? `${err.code}: ${err.message.slice(0, 80)}` : "the token check errored";
-      alertOnce(d, `token-unknown:${order.id}`, `${kind} confirm TOKEN_UNKNOWN for ${signature.slice(0, 8)}…: ${what}; not recorded yet`);
+      alertOnce(d, `token-unknown:${order.id}`, `${kind} confirm TOKEN_UNKNOWN for ${signature.slice(0, 8)}…: ${what}; not recorded yet`, {
+        event: "TOKEN_UNKNOWN",
+        code: "TOKEN_UNKNOWN",
+        kind,
+        id: order.id,
+      });
       throw verifyUnavailable(order.id, signature);
     }
     // H4-01: it landed, so the funds moved: record it (flagged), tell the user to revoke.
@@ -1295,7 +1315,12 @@ async function verifyAndRecord(
   if (!(post > 0)) {
     // The tx itself left the wallet at 0 lamports (closed). Unknown, never "fine": kept pending
     // (not failed: it landed), alerted once per order.
-    alertOnce(d, `wallet-closed:${order.id}`, `${kind} confirm WALLET_MISSING for ${signature.slice(0, 8)}…: the landed tx left the wallet at 0 lamports; not recorded yet`);
+    alertOnce(d, `wallet-closed:${order.id}`, `${kind} confirm WALLET_MISSING for ${signature.slice(0, 8)}…: the landed tx left the wallet at 0 lamports; not recorded yet`, {
+      event: "WALLET_MISSING",
+      code: "WALLET_MISSING",
+      kind,
+      id: order.id,
+    });
     throw verifyUnavailable(order.id, signature);
   }
 
@@ -1329,7 +1354,11 @@ async function verifyAndRecord(
     const now = (await d.chain.getTokenAccounts(owner.wallet)).find((a) => a.pubkey === usdcAta);
     const drift = now ? tokenAccountDrift(Buffer.from(now.data)) : null;
     if (drift)
-      alertOnce(d, `ata-drift:${order.id}`, `${kind} confirm ${signature.slice(0, 8)}…: the USDC account now differs from the plain template (${drift}); recorded, check it`);
+      alertOnce(d, `ata-drift:${order.id}`, `${kind} confirm ${signature.slice(0, 8)}…: the USDC account now differs from the plain template (${drift}); recorded, check it`, {
+        event: "ATA_DRIFT",
+        kind,
+        id: order.id,
+      });
   } catch {
     d.log?.(`${kind} confirm: couldn't read the USDC account for ${signature.slice(0, 8)}… (alert-only check skipped)`);
   }
@@ -1343,7 +1372,11 @@ async function verifyAndRecord(
       ok = false;
     }
     if (!ok) {
-      alertOnce(d, `review-write:${order.id}`, `${kind} confirm: couldn't write the review flag for order ${order.id.slice(0, 8)} (${signature.slice(0, 8)}…); not recorded yet`);
+      alertOnce(d, `review-write:${order.id}`, `${kind} confirm: couldn't write the review flag for order ${order.id.slice(0, 8)} (${signature.slice(0, 8)}…); not recorded yet`, {
+        event: "REVIEW_WRITE_FAILED",
+        kind,
+        id: order.id,
+      });
       throw verifyUnavailable(order.id, signature);
     }
   }
@@ -1359,8 +1392,9 @@ async function verifyAndRecord(
       d.log?.(`${kind} confirm: order failed concurrently; reviving verified ${signature.slice(0, 8)}…`);
       // H-02: we don't store why it was failed. If another instance refused it under different
       // limits (e.g. MAX_STAKE_USDC skew during a deploy), a human should see this record.
-      (d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`)))(
+      (d.alert ?? opsAlert)(
         `${kind} confirm revived concurrently failed order ${order.id.slice(0, 8)} (${signature.slice(0, 8)}…, moved ${usdcExact(moved < 0n ? 0n : moved)} USDC, this instance's cap ${d.maxStakeCapBase === null ? "unset" : usdcExact(d.maxStakeCapBase)})`,
+        { event: "REVIVED_FAILED_ORDER", kind, id: order.id },
       );
       result = await d.copy.completeOrder(order.id, owner.uid, signature, { allowFailed: true });
     }
@@ -1448,7 +1482,7 @@ export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
     skipped: 0,
     abandoned: 0,
   };
-  const alert = d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`));
+  const alert = d.alert ?? opsAlert;
   const atCap = async (o: PendingOrder, sig: string, why: string) => {
     // I-02 / I-03: decided on every outcome of the last attempt (pending, unavailable, error, timeout).
     let st: PendingOrder["status"] | undefined;
@@ -1461,11 +1495,16 @@ export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
     if (await provablyDead(d, o, sig)) {
       await d.copy.failOrder(o.id);
       out.gaveUp++;
-      alert(`sweep gave up on ${o.kind} ${o.id.slice(0, 8)} after ${SWEEP.maxAttempts} checks: provably expired (no trace, blockhash invalid)`);
+      alert(`sweep gave up on ${o.kind} ${o.id.slice(0, 8)} after ${SWEEP.maxAttempts} checks: provably expired (no trace, blockhash invalid)`, {
+        event: "SWEEP_GAVE_UP",
+        kind: o.kind,
+        id: o.id,
+      });
     } else {
       out.exhausted++;
       alert(
         `sweep stopped checking ${o.kind} ${o.id.slice(0, 8)} (${sig.slice(0, 8)}…) after ${SWEEP.maxAttempts} checks (${why}); NOT failed: it may have landed. Kept pending, revivable by signature`,
+        { event: "SWEEP_STOPPED", kind: o.kind, id: o.id },
       );
     }
   };
@@ -1506,7 +1545,12 @@ export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
         out.skipped = 1;
         why = "timed out";
         d.log?.(`sweep ${o.kind} ${o.id.slice(0, 8)}: budget ran out mid-check`);
-        if (last) alert(`sweep: last check of ${o.kind} ${o.id.slice(0, 8)} timed out; kept pending, revivable by signature`);
+        if (last)
+          alert(`sweep: last check of ${o.kind} ${o.id.slice(0, 8)} timed out; kept pending, revivable by signature`, {
+            event: "SWEEP_TIMEOUT",
+            kind: o.kind,
+            id: o.id,
+          });
         break;
       }
       if (r.value.status === "confirmed") {
@@ -1532,7 +1576,11 @@ export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
       try {
         await atCap(o, sig, why);
       } catch {
-        alert(`sweep: couldn't settle ${o.kind} ${o.id.slice(0, 8)} at ${SWEEP.maxAttempts} checks; kept pending`);
+        alert(`sweep: couldn't settle ${o.kind} ${o.id.slice(0, 8)} at ${SWEEP.maxAttempts} checks; kept pending`, {
+          event: "SWEEP_UNSETTLED",
+          kind: o.kind,
+          id: o.id,
+        });
       }
     }
   }
@@ -1551,9 +1599,10 @@ export async function sweepBroadcastOrders(d: FlowDeps): Promise<SweepSummary> {
         rowErrors++;
       }
     }
-    if (rowErrors > 0) alert(`sweep: ${rowErrors} never-broadcast order(s) couldn't be failed (see README pre-check)`);
+    if (rowErrors > 0)
+      alert(`sweep: ${rowErrors} never-broadcast order(s) couldn't be failed (see README pre-check)`, { event: "ABANDON_ROW_ERRORS" });
   } catch {
-    alert("sweep: listing never-broadcast orders failed; abandon step skipped this run");
+    alert("sweep: listing never-broadcast orders failed; abandon step skipped this run", { event: "ABANDON_LIST_FAILED" });
   }
   return out;
 }

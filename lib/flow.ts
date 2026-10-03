@@ -15,6 +15,7 @@ import { getSharedMemoryCopyStore } from "./mock/copy-store-memory";
 import * as panta from "./panta";
 import { PubkeySchema } from "./schemas";
 import type { ReportDeps } from "./report-retry";
+import { opsAlert } from "./ops-alert";
 import { rpcChain } from "./solana";
 
 /** PANTA_PROGRAM_IDS as a set. Real mode fails closed if it's missing or malformed. */
@@ -88,7 +89,7 @@ export function getFlowDeps(): FlowDeps {
     maxStakeCapBase: stakeCapOrNull(),
     mock,
     log: (m) => console.info(`[copy] ${m}`),
-    alert: (m) => console.error(`[ALERT] ${m}`),
+    alert: opsAlert,
   };
 }
 
@@ -98,6 +99,6 @@ export function getReportDeps(): ReportDeps {
     copy: isMockMode() ? getSharedMemoryCopyStore() : supabaseCopyStore,
     panta: { reportTrade: panta.reportTrade },
     log: (m) => console.info(`[report] ${m}`),
-    alert: (m) => console.error(`[ALERT] ${m}`),
+    alert: opsAlert,
   };
 }

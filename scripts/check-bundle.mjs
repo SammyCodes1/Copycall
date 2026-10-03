@@ -19,12 +19,14 @@ const NAMES = [
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_WEBHOOK_SECRET",
   "SOLANA_RPC_URL",
+  "OPS_ALERT_WEBHOOK_URL",
+  "hooks.slack.com",
   "pk_test_",
   "pk_live_",
   "X-Api-Key",
   "live-api.panta.market",
 ];
-const VALUE_VARS = ["PANTA_API_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SESSION_SECRET", "CRON_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "SOLANA_RPC_URL"];
+const VALUE_VARS = ["PANTA_API_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SESSION_SECRET", "CRON_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "SOLANA_RPC_URL", "OPS_ALERT_WEBHOOK_URL"];
 const needles = [
   ...NAMES.map((n) => ({ label: n, value: n })),
   ...VALUE_VARS.filter((v) => (process.env[v] ?? "").length >= 8).map((v) => ({ label: `value of ${v}`, value: process.env[v] })),

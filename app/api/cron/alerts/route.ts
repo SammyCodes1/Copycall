@@ -3,6 +3,7 @@ import { ensureMockData, getAlertDeps } from "@/lib/data";
 import { readEnv } from "@/lib/env";
 import { sweepBroadcastOrders, type SweepSummary } from "@/lib/copy-core";
 import { getFlowDeps, getReportDeps } from "@/lib/flow";
+import { flushOpsAlerts } from "@/lib/ops-alert";
 import { runReportRetries, type ReportRetrySummary } from "@/lib/report-retry";
 import { runAlerts } from "@/lib/sync";
 
@@ -40,5 +41,7 @@ export async function GET(request: Request) {
   } catch (err) {
     console.error("[cron/alerts] failed", err instanceof Error ? err.message : "error");
     return Response.json({ ok: false, code: "ALERTS_FAILED" }, { status: 500, headers: { "Cache-Control": "no-store" } });
+  } finally {
+    await flushOpsAlerts(); // serverless: deliver queued operator alerts before the run ends (bounded)
   }
 }

@@ -13,6 +13,7 @@
  * Pure module: store, Panta and logging are injected.
  */
 import type { CopyStore, ReportJob, ReportRetryPolicy } from "./copy-store";
+import { opsAlert, type AlertTag } from "./ops-alert";
 import { PantaError } from "./panta-error";
 import type { ReportTradeRequest, ReportTradeResponse } from "./schemas";
 
@@ -26,8 +27,8 @@ export type ReportDeps = {
   copy: Pick<CopyStore, "markReported" | "recordReportFailure" | "claimReportRetries">;
   panta: { reportTrade(req: ReportTradeRequest): Promise<ReportTradeResponse> };
   log?: (m: string) => void;
-  /** Operator alert (default: console.error with an [ALERT] prefix). */
-  alert?: (m: string) => void;
+  /** Operator alert (default: opsAlert: the [ALERT] log, plus the sanitized webhook post). */
+  alert?: (m: string, tag?: AlertTag) => void;
 };
 
 export type ReportOutcome = "reported" | "retry" | "stopped";
@@ -53,8 +54,13 @@ export async function reportOnce(
     const code = err instanceof PantaError && /^[A-Z_]{1,40}$/.test(err.code) ? err.code : "ERROR";
     const stop = REPORT_STOP_CODES.has(code);
     if (REPORT_ALERT_CODES.has(code)) {
-      const alert = d.alert ?? ((m: string) => console.error(`[ALERT] ${m}`));
-      alert(`Panta refused the ${job.kind} report for ${short(job.signature)} with ${code}; not retrying`);
+      const alert = d.alert ?? opsAlert;
+      alert(`Panta refused the ${job.kind} report for ${short(job.signature)} with ${code}; not retrying`, {
+        event: "REPORT_REFUSED",
+        code,
+        kind: job.kind,
+        id: job.orderId,
+      });
     }
     d.log?.(`${job.kind} report failed for ${short(job.signature)} (attempt ${job.attempts}): ${code}`);
     try {
