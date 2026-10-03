@@ -8,7 +8,8 @@
 import { DEFAULT_FEE_CAP_BPS, MAX_FEE_CAP_BPS } from "./copy-math";
 import type { PinnedFeeModel } from "./fee-quote";
 
-export type FeeConfig = { model: PinnedFeeModel; feeCapBps: number };
+/** pinned: PANTA_FEE_MODEL was set explicitly (always true in real mode); false for the mock default (Q-01). */
+export type FeeConfig = { model: PinnedFeeModel; feeCapBps: number; pinned: boolean };
 
 export class FeeConfigError extends Error {}
 
@@ -19,6 +20,7 @@ function parseModel(v: string | undefined): PinnedFeeModel | null {
 
 export function feeConfigFromEnv(env: Record<string, string | undefined>, mock: boolean): FeeConfig {
   let model = parseModel(env.PANTA_FEE_MODEL);
+  const pinned = model !== null;
   if (!model && (env.PANTA_FEE_MODEL ?? "").trim() !== "")
     throw new FeeConfigError("PANTA_FEE_MODEL must be inclusive or on_top");
   if (!model) {
@@ -32,5 +34,5 @@ export function feeConfigFromEnv(env: Record<string, string | undefined>, mock: 
   const feeCapBps = rawCap === "" ? DEFAULT_FEE_CAP_BPS : Number(rawCap);
   if (!Number.isInteger(feeCapBps) || feeCapBps < 1 || feeCapBps > MAX_FEE_CAP_BPS)
     throw new FeeConfigError(`PANTA_FEE_CAP_BPS must be an integer from 1 to ${MAX_FEE_CAP_BPS}`);
-  return { model, feeCapBps };
+  return { model, feeCapBps, pinned };
 }

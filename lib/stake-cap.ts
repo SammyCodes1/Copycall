@@ -8,7 +8,7 @@
  *  - Mock mode: defaults to 5 when unset (a bad value is still an error).
  *  - Plain decimal, at most 6 dp, > 0 and <= 1000. Errors name the variable, never its value.
  */
-import { toMicro, usdcExact } from "./copy-math";
+import { MIN_STAKE_USDC, toMicro, usdcExact } from "./copy-math";
 
 export const STAKE_CAP_CEILING_USDC = "1000";
 export const MOCK_STAKE_CAP_USDC = "5";
@@ -29,6 +29,41 @@ export function stakeCapFromEnv(env: Record<string, string | undefined>, mock: b
   const base = toMicro(raw);
   if (base <= 0n || base > toMicro(STAKE_CAP_CEILING_USDC)) throw bad();
   return base;
+}
+
+/** Q-01: config code when MAX_STAKE_USDC is below MIN_STAKE_USDC (no stake could ever be saved). */
+export const STAKE_CAP_BELOW_MIN = "STAKE_CAP_BELOW_MIN";
+
+/**
+ * Q-01: the config error when the launch cap is below the minimum stake, or null. Copying is then
+ * disabled (quote and build refuse with STAKE_CAP_BELOW_MIN). Names the variables, never the value.
+ */
+export function stakeCapBelowMinError(capBase: bigint): string | null {
+  return capBase < toMicro(String(MIN_STAKE_USDC))
+    ? `MAX_STAKE_USDC is below the ${MIN_STAKE_USDC} USDC minimum stake (MIN_STAKE_USDC): copying is disabled`
+    : null;
+}
+
+/**
+ * Startup check (instrumentation.ts register(), once per server instance): logs the
+ * below-minimum config error once and returns it. A missing or invalid cap is reported by
+ * the existing checks (stakeCapOrNull), so it's not logged again here.
+ */
+export function checkStakeCapAtBoot(
+  env: Record<string, string | undefined>,
+  mock: boolean,
+  log: (msg: string) => void = (m) => console.error(m),
+): string | null {
+  let cap: bigint;
+  try {
+    cap = stakeCapFromEnv(env, mock);
+  } catch (err) {
+    if (err instanceof StakeCapError) return null;
+    throw err;
+  }
+  const msg = stakeCapBelowMinError(cap);
+  if (msg) log(`[copy] ${msg}`);
+  return msg;
 }
 
 /** For display: "5" -> "5.00", "2.5" -> "2.50". */

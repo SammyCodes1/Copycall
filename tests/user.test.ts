@@ -4,6 +4,7 @@ import { GET as getSettingsRoute, PUT as putSettingsRoute } from "@/app/api/sett
 import { POST as logoutRoute } from "@/app/api/auth/logout/route";
 import { ensureMockData, getDataStore } from "@/lib/data";
 import { apiRequest, signedInUser } from "./helpers/session";
+import { MIN_STAKE_USDC, SettingsRequestSchema } from "@/lib/schemas";
 
 let leader: string;
 
@@ -99,12 +100,27 @@ describe("GET/PUT /api/settings", () => {
     const u = await signedInUser();
     const put = (body: unknown, o: { origin?: string | null; cookie?: string } = {}) =>
       putSettingsRoute(apiRequest("PUT", "/api/settings", { body, cookie: o.cookie ?? u.cookie, origin: o.origin }));
-    for (const maxStakeUsdc of ["0", "0.99", "1000.01", "5.001", "abc", -5]) {
+    for (const maxStakeUsdc of ["0", "0.99", "1", "1.50", "1.99", "1000.01", "5.001", "abc", -5]) {
       expect((await put({ ...valid, maxStakeUsdc })).status, String(maxStakeUsdc)).toBe(400);
     }
     expect((await put({ ...valid, telegramChatId: 1 })).status).toBe(400);
     expect((await put(valid, { origin: "https://evil.example" })).status).toBe(403);
     expect((await putSettingsRoute(apiRequest("PUT", "/api/settings", { body: valid }))).status).toBe(401);
+  });
+
+  it("Q-01: the minimum max stake is 2 USDC (1.50 is rejected, 2 is accepted)", async () => {
+    const u = await signedInUser();
+    const put = (maxStakeUsdc: string | number) =>
+      putSettingsRoute(apiRequest("PUT", "/api/settings", { body: { ...valid, maxStakeUsdc }, cookie: u.cookie }));
+    const bad = await put("1.50");
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).message).toContain("2-1000 USDC");
+    expect((await put(1.5)).status).toBe(400);
+    expect((await put("2")).status).toBe(200);
+    expect((await put("2.00")).status).toBe(200);
+    expect(SettingsRequestSchema.safeParse({ ...valid, maxStakeUsdc: "1.50" }).success).toBe(false);
+    expect(SettingsRequestSchema.safeParse({ ...valid, maxStakeUsdc: "2.00" }).success).toBe(true);
+    expect(MIN_STAKE_USDC).toBe(2);
   });
 
   it("launch cap: a stake above MAX_STAKE_USDC can't be saved (mock default 5)", async () => {

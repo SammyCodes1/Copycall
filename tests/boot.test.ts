@@ -38,4 +38,21 @@ describe("mock mode can never boot in production (addendum I)", () => {
     const { createMemoryAuthStore } = await import("@/lib/mock/auth-store-memory");
     expect(() => createMemoryAuthStore()).toThrow();
   });
+
+  it("Q-01: register() logs MAX_STAKE_USDC below the minimum once at startup (and still boots)", async () => {
+    const prev = process.env.MAX_STAKE_USDC;
+    process.env.MAX_STAKE_USDC = "1";
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { register } = await import("@/instrumentation");
+      expect(() => register()).not.toThrow();
+      const hits = spy.mock.calls.filter((c) => String(c[0]).includes("below the 2 USDC minimum"));
+      expect(hits).toHaveLength(1);
+      expect(String(hits[0][0])).toBe("[copy] MAX_STAKE_USDC is below the 2 USDC minimum stake (MIN_STAKE_USDC): copying is disabled");
+    } finally {
+      spy.mockRestore();
+      if (prev === undefined) delete process.env.MAX_STAKE_USDC;
+      else process.env.MAX_STAKE_USDC = prev;
+    }
+  });
 });

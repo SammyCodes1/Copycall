@@ -89,7 +89,7 @@ values, which the app does not currently read (the browser never queries Supabas
 | `GET /api/leaderboard?limit=` | public | Ranked wallets with >= `MIN_RESOLVED_CALLS` resolved calls |
 | `GET /api/trader/[wallet]` | public | Stats, open positions, recent calls (400 if not a base58 pubkey) |
 | `POST/DELETE /api/follow` | session + Origin | `{ "wallet": "..." }` |
-| `GET/PUT /api/settings` | session (+ Origin on PUT) | Max stake (USDC), slippage (default 200 bps, hard max 500), alerts on/off |
+| `GET/PUT /api/settings` | session (+ Origin on PUT) | Max stake (USDC, 2–1000), slippage (default 200 bps, hard max 500), alerts on/off |
 | `POST /api/telegram/link` | session + Origin | One-time code (10 min) and `https://t.me/<bot>?start=<code>` |
 | `POST /api/telegram/webhook` | `X-Telegram-Bot-Api-Secret-Token` | `/start <code>` links the chat, `/stop` pauses alerts |
 
@@ -152,7 +152,14 @@ Flow (all Panta calls and all checks run on the server; the browser only signs):
    (required in real mode; mock defaults to `MOCK_PANTA_FEE_MODEL`, default `inclusive`). Each quote is classified
    from its own numbers (`lib/copy-math.ts` `classifyFeeModel`): *inclusive* if shares ≈ (amount − fee) / avgPrice,
    *on top* if shares ≈ amount / avgPrice, within 0.01 share + 5 bps. If both or neither fit, or the two predictions
-   are closer than twice the tolerance, or the quote contradicts the pin, the copy is refused. With the fee on top
+   are closer than twice the tolerance, or the quote contradicts the pin, the copy is refused. Q-01: when
+   `PANTA_FEE_MODEL` is set explicitly, a quote that is only *ambiguous* (too close to tell, typical under ~1.15
+   USDC) is accepted as the pinned model if its shares fit the pinned prediction; fitting only the other model is
+   `FEE_MODEL_MISMATCH`, fitting neither is `FEE_MODEL_UNKNOWN`. The mock default (no explicit pin) still refuses
+   ambiguous quotes. The minimum saved max stake is 2 USDC (`MIN_STAKE_USDC`, Settings form and API); a
+   stake saved below it earlier is refused at quote (and build) with `STAKE_BELOW_MIN` before Panta is asked. If
+   `MAX_STAKE_USDC` is below the minimum, copying is disabled: logged once at startup, and quote/build answer 503
+   `STAKE_CAP_BELOW_MIN`. With the fee on top
    the server re-quotes once with deposit = stake − fee (rounded down to the cent) and requires deposit + re-quoted
    fee ≤ stake (`lib/fee-quote.ts`); the re-quote must read on top too (not no-fee) and its fee can't be higher
    than the first quote's (E-08). Fees above `PANTA_FEE_CAP_BPS` of the stake (default 500 = 5%; plain digits

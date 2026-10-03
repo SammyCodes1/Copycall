@@ -19,6 +19,15 @@ describe("SettingsForm and the launch cap (H-05)", () => {
     expect(html).toContain("Copies are refused until you lower it");
   });
 
+  it("Q-01: the help text starts at 2 USDC", () => {
+    expect(render("5.00", "5")).toContain("2–5 USDC (this server");
+    expect(render("5.00", null)).toContain("2–1000 USDC.");
+    expect(render("5.00", "5")).not.toContain("1–5 USDC");
+    // 1.50 saved before Q-01: the field shows as invalid
+    expect(render("1.50", "5")).toContain('aria-invalid="true"');
+    expect(render("2.00", "5")).toContain('aria-invalid="false"');
+  });
+
   it("no warning at or under the cap, or when copying isn't configured", () => {
     for (const [s, c] of [["5.00", "5"], ["2.00", "5"], ["50.00", null]] as const)
       expect(render(s, c)).not.toContain("Copies are refused");

@@ -12,6 +12,7 @@
  */
 import bs58 from "bs58";
 import { z } from "zod";
+import { MIN_STAKE_USDC } from "./copy-math";
 
 // ---------- primitives ----------
 
@@ -291,8 +292,8 @@ export const VerifyRequestSchema = z
 
 export const FollowRequestSchema = z.object({ wallet: PubkeySchema }).strict();
 
-/** Per-copy stake limits (USDC). Panta rejects tiny fills; 1000 keeps a demo account safe. */
-export const MIN_STAKE_USDC = 1;
+/** Per-copy stake limits (USDC). The minimum lives in copy-math (client-safe, shared with Settings); 1000 keeps a demo account safe. */
+export { MIN_STAKE_USDC };
 export const MAX_STAKE_USDC = 1000;
 
 export const SettingsRequestSchema = z

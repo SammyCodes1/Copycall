@@ -84,7 +84,7 @@ export function getFlowDeps(): FlowDeps {
     pantaProgramIds: pantaProgramIds(),
     ...(() => {
       const f = feeConfigOrNull();
-      return { feeModel: f?.model ?? null, feeCapBps: f?.feeCapBps ?? null };
+      return { feeModel: f?.model ?? null, feeCapBps: f?.feeCapBps ?? null, feeModelPinned: f?.pinned ?? false };
     })(),
     maxStakeCapBase: stakeCapOrNull(),
     mock,

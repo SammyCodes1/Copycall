@@ -213,6 +213,7 @@ try {
       wallet,
       slippageBps: Number(a.slippage),
       pinned: fee.model,
+      explicitPin: fee.pinned, // Q-01
       feeCapBps: fee.feeCapBps,
       pantaProgramIds: programIds,
       maxStakeCapBase: capBase,

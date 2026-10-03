@@ -5,6 +5,7 @@
  */
 import { useRouter } from "next/navigation";
 import { useId, useState, useTransition } from "react";
+import { MIN_STAKE_USDC } from "@/lib/copy-math";
 import { sendJson } from "./api";
 import { Button } from "./ui/Button";
 import { cn } from "./ui/cn";
@@ -29,7 +30,7 @@ export function SettingsForm({ initial, capUsdc }: { initial: Settings; capUsdc:
   const slippageInvalid = !(slippagePct.trim() !== "" && Number.isFinite(pct) && pct >= 0 && pct <= 5);
   const stakeNum = Number(stake);
   const maxStake = capUsdc !== null ? Math.min(1000, Number(capUsdc)) : 1000;
-  const stakeInvalid = !(/^\d{1,4}(\.\d{1,2})?$/.test(stake.trim()) && stakeNum >= 1 && stakeNum <= maxStake);
+  const stakeInvalid = !(/^\d{1,4}(\.\d{1,2})?$/.test(stake.trim()) && stakeNum >= MIN_STAKE_USDC && stakeNum <= maxStake);
 
   function save(e: React.FormEvent) {
     e.preventDefault();
@@ -86,8 +87,8 @@ export function SettingsForm({ initial, capUsdc }: { initial: Settings; capUsdc:
           )}
           <p id={`${id}-stake-help`} className="mt-1.5 text-xs leading-5 text-fg-subtle">
             {capUsdc !== null
-              ? `1–${capUsdc} USDC (this server's limit per copy). Every copy is capped at this, whatever the leader bought.`
-              : "1–1000 USDC. Every copy is capped at this, whatever the leader bought."}
+              ? `${MIN_STAKE_USDC}–${capUsdc} USDC (this server's limit per copy). Every copy is capped at this, whatever the leader bought.`
+              : `${MIN_STAKE_USDC}–1000 USDC. Every copy is capped at this, whatever the leader bought.`}
           </p>
         </div>
         <div>

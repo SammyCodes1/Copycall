@@ -3719,3 +3719,52 @@ describe("M-03: PANTA_PROGRAM_IDS skew between build and confirm never fails a l
     expect(state.copies.size).toBe(1);
   });
 });
+
+describe("Q-01: minimum stake and a launch cap below it", () => {
+  const stakeOf = async (u: User, maxStakeUsdc: string) =>
+    getDataStore().updateSettings(u.userId, { maxStakeUsdc, slippageBps: 200, alertsEnabled: true });
+  const counting = () => {
+    const n = { quotes: 0, builds: 0 };
+    const p = {
+      ...deps().panta,
+      quotePrimaryOrder: async (r: Parameters<typeof panta.quotePrimaryOrder>[0]) => (n.quotes++, panta.quotePrimaryOrder(r)),
+      buildPrimaryOrder: async (r: Parameters<typeof panta.buildPrimaryOrder>[0]) => (n.builds++, panta.buildPrimaryOrder(r)),
+    };
+    return { n, p };
+  };
+
+  it("a saved stake below 2 USDC is refused at quote time with STAKE_BELOW_MIN, before any Panta call or fee alert", async () => {
+    const u = await signedInUser();
+    const { n, p } = counting();
+    const alerts: string[] = [];
+    for (const s of ["1.00", "1.50", "1.99"]) {
+      await stakeOf(u, s); // saved before the minimum rose (the API would refuse it now)
+      const err = await quoteCopy(deps({ panta: p, alert: (m: string) => alerts.push(m) }), get("/q", u), trade.id).catch((e) => e);
+      expect(err).toBeInstanceOf(AuthError);
+      expect(err).toMatchObject({ code: "STAKE_BELOW_MIN", status: 422 });
+      expect(err.message).toBe("Your max stake is below the 2 USDC minimum. Raise it in Settings.");
+    }
+    expect(n.quotes).toBe(0);
+    expect(alerts).toEqual([]);
+    await stakeOf(u, "2.00");
+    expect(await code(quoteCopy(deps({ panta: p }), get("/q", u), trade.id))).toBe("OK");
+    expect(n.quotes).toBeGreaterThan(0);
+  });
+
+  it("MAX_STAKE_USDC below the minimum disables quote and build with STAKE_CAP_BELOW_MIN (no Panta call)", async () => {
+    const u = await signedInUser();
+    await stakeOf(u, "2.00");
+    const state = createCopyMemoryState();
+    const { n, p } = counting();
+    for (const cap of [1_000_000n, 1_990_000n]) {
+      await createMemoryCopyStore(state).cacheDelete(`quote:${u.userId}:${trade.id}`);
+      const q = await quoteCopy(deps({ state }), get("/q", u), trade.id); // quoted while the cap was fine (single-use token)
+      const d = deps({ state, maxStakeCapBase: cap, panta: p });
+      const qe = await quoteCopy(d, get("/q", u), trade.id).catch((e) => e);
+      expect(qe).toMatchObject({ code: "STAKE_CAP_BELOW_MIN", status: 503 });
+      expect(await code(buildCopy(d, post("/b", { quoteToken: q.quoteToken }, u), trade.id))).toBe("STAKE_CAP_BELOW_MIN");
+    }
+    expect(n).toEqual({ quotes: 0, builds: 0 });
+    expect(state.orders.size).toBe(0);
+  });
+});

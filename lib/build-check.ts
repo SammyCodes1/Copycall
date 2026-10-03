@@ -45,6 +45,8 @@ export type BuildCheckOptions = {
   wallet: string;
   slippageBps: number;
   pinned: PinnedFeeModel;
+  /** Q-01: PANTA_FEE_MODEL was set explicitly (FeeConfig.pinned); lets an "ambiguous" quote that fits the pin through. */
+  explicitPin?: boolean;
   feeCapBps: number;
   pantaProgramIds: ReadonlySet<string>;
   /** MAX_STAKE_USDC (launch cap) in base units; the amount must also be at or under it. */
@@ -114,7 +116,7 @@ export async function runBuildCheck(o: BuildCheckOptions, deps: BuildCheckDeps):
           return q;
         },
         stake,
-        { pinned: o.pinned, feeCapBps: o.feeCapBps },
+        { pinned: o.pinned, feeCapBps: o.feeCapBps, explicitPin: o.explicitPin === true },
       );
     } catch (err) {
       if (err instanceof FeeModelError)

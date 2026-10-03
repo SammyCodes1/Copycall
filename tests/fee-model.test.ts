@@ -190,11 +190,91 @@ describe("quoteWithinStake (pinned model)", () => {
   });
 });
 
+describe("Q-01: an explicit pin resolves an ambiguous quote that fits it", () => {
+  // The live 1.00 USDC quote of 2026-10-03 (market 5cyM...): on top, but too small to classify.
+  const LIVE_PRICE = 0.506453;
+  const one = toMicro("1.00");
+  /** Panta-like quote: 2% fee (cents), shares priced per `fits` ("neither" = between the two). */
+  const quoteAs = (fits: "on_top" | "inclusive" | "neither") => {
+    const calls: string[] = [];
+    const quote = async (amountUsdc: string) => {
+      calls.push(amountUsdc);
+      const a = Number(amountUsdc);
+      const fee = Number((a * 0.02).toFixed(2));
+      const top = a / LIVE_PRICE;
+      const inc = (a - fee) / LIVE_PRICE;
+      const shares = fits === "on_top" ? top : fits === "inclusive" ? inc : (top + inc) / 2;
+      return { amountUsdc, feeUsdc: fee.toFixed(2), avgPrice: LIVE_PRICE.toFixed(6), shares: shares.toFixed(6) };
+    };
+    return { quote, calls };
+  };
+  const EXPLICIT = (pinned: "inclusive" | "on_top") => ({ ...PIN(pinned), explicitPin: true });
+
+  it("the live numbers really are ambiguous (and fit on top)", () => {
+    expect(classifyFeeModel({ amountUsdc: "1.00", feeUsdc: "0.02", avgPrice: "0.506453", shares: "1.974514" }).model).toBe("ambiguous");
+  });
+
+  it("pinned on_top + ambiguous that fits on top: accepted (re-quote too), outflow within the stake", async () => {
+    const p = quoteAs("on_top");
+    const r = await quoteWithinStake(p.quote, one, EXPLICIT("on_top"));
+    expect(p.calls).toEqual(["1.00", "0.98"]);
+    expect(r).toMatchObject({ model: "on_top", firstModel: "ambiguous", quotes: 2 });
+    expect(r.depositBase).toBe(toMicro("0.98"));
+    expect(r.outflowBase).toBe(one);
+  });
+
+  it("pinned inclusive + ambiguous that fits inclusive: accepted", async () => {
+    const r = await quoteWithinStake(quoteAs("inclusive").quote, one, EXPLICIT("inclusive"));
+    expect(r).toMatchObject({ model: "inclusive", firstModel: "ambiguous", quotes: 1, outflowBase: one });
+  });
+
+  it("pinned + ambiguous that contradicts the pin: refused (mismatch), no re-quote", async () => {
+    for (const [pin, fits] of [["inclusive", "on_top"], ["on_top", "inclusive"]] as const) {
+      const p = quoteAs(fits);
+      await expect(quoteWithinStake(p.quote, one, EXPLICIT(pin))).rejects.toMatchObject({
+        code: "FEE_MODEL_MISMATCH",
+        detected: "ambiguous",
+      });
+      expect(p.calls).toEqual(["1.00"]);
+    }
+  });
+
+  it("pinned + ambiguous that fits neither model: refused FEE_MODEL_UNKNOWN", async () => {
+    for (const pin of ["inclusive", "on_top"] as const)
+      await expect(quoteWithinStake(quoteAs("neither").quote, one, EXPLICIT(pin))).rejects.toMatchObject({
+        code: "FEE_MODEL_UNKNOWN",
+        detected: "ambiguous",
+      });
+  });
+
+  it("pinned + a clear classification that contradicts the pin: still refused", async () => {
+    await expect(quoteWithinStake(fakePanta("inclusive").quote, toMicro("5.00"), EXPLICIT("on_top"))).rejects.toMatchObject({
+      code: "FEE_MODEL_MISMATCH",
+      detected: "inclusive",
+    });
+  });
+
+  it("unpinned (mock default, explicitPin false or absent) + ambiguous: refused as before", async () => {
+    for (const opts of [PIN("on_top"), { ...PIN("on_top"), explicitPin: false }]) {
+      const p = quoteAs("on_top");
+      await expect(quoteWithinStake(p.quote, one, opts)).rejects.toMatchObject({ code: "FEE_MODEL_UNKNOWN", detected: "ambiguous" });
+      expect(p.calls).toEqual(["1.00"]);
+    }
+  });
+
+  it("FeeConfig.pinned is true only when PANTA_FEE_MODEL is set", () => {
+    expect(feeConfigFromEnv({ PANTA_FEE_MODEL: "on_top" }, false).pinned).toBe(true);
+    expect(feeConfigFromEnv({ PANTA_FEE_MODEL: "inclusive" }, true).pinned).toBe(true);
+    expect(feeConfigFromEnv({}, true).pinned).toBe(false);
+    expect(feeConfigFromEnv({ MOCK_PANTA_FEE_MODEL: "on_top" }, true).pinned).toBe(false);
+  });
+});
+
 describe("fee config (PANTA_FEE_MODEL pin, PANTA_FEE_CAP_BPS)", () => {
   it("real mode requires the pin; mock defaults to MOCK_PANTA_FEE_MODEL or inclusive", () => {
     expect(() => feeConfigFromEnv({}, false)).toThrow(/PANTA_FEE_MODEL is required/);
-    expect(feeConfigFromEnv({ PANTA_FEE_MODEL: "on_top" }, false)).toEqual({ model: "on_top", feeCapBps: 500 });
-    expect(feeConfigFromEnv({}, true)).toEqual({ model: "inclusive", feeCapBps: 500 });
+    expect(feeConfigFromEnv({ PANTA_FEE_MODEL: "on_top" }, false)).toEqual({ model: "on_top", feeCapBps: 500, pinned: true });
+    expect(feeConfigFromEnv({}, true)).toEqual({ model: "inclusive", feeCapBps: 500, pinned: false });
     expect(feeConfigFromEnv({ MOCK_PANTA_FEE_MODEL: "on_top" }, true).model).toBe("on_top");
     expect(feeConfigFromEnv({ PANTA_FEE_MODEL: "inclusive", MOCK_PANTA_FEE_MODEL: "on_top" }, true).model).toBe(
       "inclusive",

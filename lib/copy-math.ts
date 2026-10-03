@@ -64,6 +64,25 @@ function withinTolerance(actual: bigint, predicted: bigint): boolean {
   return diff <= tolerance(predicted);
 }
 
+/**
+ * Q-01: does the quote's share count fit this model's prediction (within tolerance)? Used only to
+ * resolve an "ambiguous" classification under an explicit PANTA_FEE_MODEL pin. False on odd numbers.
+ */
+export function quoteFitsFeeModel(
+  q: { amountUsdc: string; feeUsdc: string; avgPrice: string; shares: string },
+  model: "inclusive" | "on_top",
+): boolean {
+  let amount: bigint, fee: bigint, price: bigint, shares: bigint;
+  try {
+    [amount, fee, price, shares] = [toMicro(q.amountUsdc), toMicro(q.feeUsdc), toMicro(q.avgPrice), toMicro(q.shares)];
+  } catch {
+    return false;
+  }
+  if (amount <= 0n || price <= 0n || price > SCALE || shares <= 0n || fee <= 0n || fee >= amount) return false;
+  const predicted = model === "on_top" ? (amount * SCALE) / price : ((amount - fee) * SCALE) / price;
+  return withinTolerance(shares, predicted);
+}
+
 /** Which fee model a quote's own numbers fit. Pure; never throws on odd numbers (returns "unknown"). */
 export function classifyFeeModel(q: { amountUsdc: string; feeUsdc: string; avgPrice: string; shares: string }): {
   model: FeeModelResult;
@@ -106,6 +125,13 @@ export function outflowBase(model: FeeModel, depositBase: bigint, feeBase: bigin
 export function copyUsdcLimitBase(maxStakeBase: bigint): bigint {
   return maxStakeBase;
 }
+
+/**
+ * Smallest max stake a user may save (USDC). 2, not 1 (Q-01): under 2 USDC Panta's ~2% fee is
+ * too small for the quote to separate the fee models reliably. Shared by the Settings form and the
+ * API schema (lib/schemas.ts).
+ */
+export const MIN_STAKE_USDC = 2;
 
 /** Default fee sanity cap (D-01): a quote or build fee above 5% of the stake is refused. */
 export const DEFAULT_FEE_CAP_BPS = 500;

@@ -14,6 +14,13 @@
  *    re-quoted fee must be <= stake. Otherwise refuse. (Price drift between the
  *    two quotes is bounded by the slippage limit and the min-shares check.)
  *    We don't assume the fee is monotone in the amount.
+ * Q-01: with an EXPLICIT pin (PANTA_FEE_MODEL set, opts.explicitPin), a quote that classifies
+ *    as "ambiguous" (small stakes: the two predictions are too close to separate) is accepted as
+ *    the pinned model, but only if its shares fit the pinned model's prediction. Ambiguous and
+ *    fitting only the other model: FEE_MODEL_MISMATCH; fitting neither: FEE_MODEL_UNKNOWN. A clear
+ *    classification that contradicts the pin is still refused. Without an explicit pin (mock
+ *    default), ambiguous is refused exactly as before. The guard and the simulated debit still cap
+ *    the real outflow at the stake whatever the model.
  *
  * Pure apart from the injected quote function, so the check script
  * (scripts/panta-fee-model.mjs) and the tests run exactly this logic.
@@ -21,6 +28,7 @@
 import {
   classifyFeeModel,
   feeCapBase,
+  quoteFitsFeeModel,
   fromMicro,
   outflowBase,
   toMicro,
@@ -46,7 +54,7 @@ export class FeeModelError extends Error {
 export type WithinStake<Q> = {
   quote: Q; // the quote to build from
   model: FeeModel; // "no_fee" or the pinned model
-  firstModel: FeeModelResult; // what the stake-sized quote classified as
+  firstModel: FeeModelResult; // what the stake-sized quote classified as (raw: "ambiguous" when Q-01 resolved it)
   depositBase: bigint; // amountUsdc of `quote`
   feeBase: bigint;
   outflowBase: bigint; // what the wallet pays, fee included (<= stake)
@@ -59,11 +67,18 @@ const floorCents = (base: bigint) => (base / 10_000n) * 10_000n;
 export async function quoteWithinStake<Q extends QuoteLike>(
   quote: (amountUsdc: string) => Promise<Q>,
   stakeBase: bigint,
-  opts: { pinned: PinnedFeeModel; feeCapBps: number },
+  opts: { pinned: PinnedFeeModel; feeCapBps: number; explicitPin?: boolean },
 ): Promise<WithinStake<Q>> {
   if (stakeBase <= 0n) throw new FeeModelError("FEE_TOO_HIGH", "Max stake must be positive");
   const cap = feeCapBase(stakeBase, opts.feeCapBps);
   let calls = 0;
+  const mismatch = (detected: FeeModelResult) =>
+    new FeeModelError(
+      "FEE_MODEL_MISMATCH",
+      "Panta's quote doesn't match the fee model this server expects, so we won't build it. Nothing was sent.",
+      detected,
+    );
+
   const ask = async (depositBase: bigint) => {
     const q = await quote(toApiAmount(depositBase));
     calls++;
@@ -86,16 +101,16 @@ export async function quoteWithinStake<Q extends QuoteLike>(
         `Panta's fee is above ${(opts.feeCapBps / 100).toFixed(2)}% of your stake, so we won't build it. Nothing was sent.`,
       );
     }
-    const model = classifyFeeModel({ ...q, amountUsdc: String(q.amountUsdc) }).model;
-    return { q, feeBase, model };
+    const qs = { ...q, amountUsdc: String(q.amountUsdc) };
+    let model: FeeModelResult = classifyFeeModel(qs).model;
+    // Q-01: an explicit pin resolves "ambiguous", only when the shares fit the pinned model.
+    if (model === "ambiguous" && opts.explicitPin) {
+      const other = opts.pinned === "on_top" ? "inclusive" : "on_top";
+      if (quoteFitsFeeModel(qs, opts.pinned)) model = opts.pinned;
+      else if (quoteFitsFeeModel(qs, other)) throw mismatch("ambiguous");
+    }
+    return { q, feeBase, model, raw: classifyFeeModel(qs).model };
   };
-  const mismatch = (detected: FeeModelResult) =>
-    new FeeModelError(
-      "FEE_MODEL_MISMATCH",
-      "Panta's quote doesn't match the fee model this server expects, so we won't build it. Nothing was sent.",
-      detected,
-    );
-
   const first = await ask(stakeBase);
   if (first.model === "ambiguous" || first.model === "unknown") {
     throw new FeeModelError(
@@ -109,7 +124,7 @@ export async function quoteWithinStake<Q extends QuoteLike>(
   const result = (q: Q, model: FeeModel, depositBase: bigint, feeBase: bigint): WithinStake<Q> => {
     const out = outflowBase(model, depositBase, feeBase);
     if (out > stakeBase) throw new FeeModelError("FEE_TOO_HIGH", "The fee doesn't fit in your max stake");
-    return { quote: q, model, firstModel: first.model, depositBase, feeBase, outflowBase: out, quotes: calls };
+    return { quote: q, model, firstModel: first.raw, depositBase, feeBase, outflowBase: out, quotes: calls };
   };
 
   if (first.model === "no_fee") return result(first.q, "no_fee", stakeBase, 0n);

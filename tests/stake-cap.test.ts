@@ -1,6 +1,7 @@
 /** Launch cap parsing (MAX_STAKE_USDC): real mode never falls back to "no limit". */
 import { describe, expect, it } from "vitest";
-import { StakeCapError, stakeCapFromEnv } from "@/lib/stake-cap";
+import { StakeCapError, checkStakeCapAtBoot, stakeCapBelowMinError, stakeCapFromEnv } from "@/lib/stake-cap";
+import { toMicro } from "@/lib/copy-math";
 
 describe("MAX_STAKE_USDC", () => {
   it("is required in real mode; mock defaults to 5", () => {
@@ -29,5 +30,27 @@ describe("MAX_STAKE_USDC", () => {
     } catch (e) {
       expect(String(e)).not.toContain("secret-ish-9999");
     }
+  });
+});
+
+describe("Q-01: MAX_STAKE_USDC below MIN_STAKE_USDC", () => {
+  it("is a config error naming both variables, never the value", () => {
+    expect(stakeCapBelowMinError(toMicro("1.99"))).toBe(
+      "MAX_STAKE_USDC is below the 2 USDC minimum stake (MIN_STAKE_USDC): copying is disabled",
+    );
+    expect(stakeCapBelowMinError(toMicro("1.99"))).not.toContain("1.99");
+    expect(stakeCapBelowMinError(toMicro("2"))).toBeNull();
+    expect(stakeCapBelowMinError(toMicro("5"))).toBeNull();
+  });
+
+  it("the startup check logs it once, and nothing for a fine, missing or invalid cap", () => {
+    const logs: string[] = [];
+    const log = (m: string) => logs.push(m);
+    expect(checkStakeCapAtBoot({ MAX_STAKE_USDC: "1.5" }, false, log)).toMatch(/below the 2 USDC minimum/);
+    expect(logs).toEqual(["[copy] MAX_STAKE_USDC is below the 2 USDC minimum stake (MIN_STAKE_USDC): copying is disabled"]);
+    for (const env of [{ MAX_STAKE_USDC: "5" }, { MAX_STAKE_USDC: "2" }, {}, { MAX_STAKE_USDC: "abc" }])
+      expect(checkStakeCapAtBoot(env, false, log)).toBeNull();
+    expect(checkStakeCapAtBoot({}, true, log)).toBeNull(); // mock default 5
+    expect(logs).toHaveLength(1);
   });
 });

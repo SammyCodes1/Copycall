@@ -53,6 +53,7 @@ import {
 } from "./solana-constants";
 import {
   copyAmounts,
+  MIN_STAKE_USDC,
   toMicro,
   copyUsdcLimitBase,
   feeCapBase,
@@ -62,6 +63,7 @@ import {
   type FeeModel,
 } from "./copy-math";
 import { FeeModelError, quoteWithinStake, type PinnedFeeModel, type WithinStake } from "./fee-quote";
+import { STAKE_CAP_BELOW_MIN, stakeCapBelowMinError } from "./stake-cap";
 import { reportOnce } from "./report-retry";
 import { safeTitle } from "./text";
 import type { TradeSide } from "./trades";
@@ -121,6 +123,8 @@ export type FlowDeps = UserDeps & {
    * positions don't depend on it (E-09).
    */
   feeModel: PinnedFeeModel | null;
+  /** Q-01: true when PANTA_FEE_MODEL was set explicitly; an "ambiguous" quote that fits the pin is then accepted. */
+  feeModelPinned?: boolean;
   /** Fee sanity cap as bps of the stake (PANTA_FEE_CAP_BPS, default 500). Quotes and builds above it are refused. */
   feeCapBps: number | null;
   /**
@@ -242,17 +246,25 @@ export const QUOTE_VIEW_VERSION = 2;
 type CachedQuote = { v: number; view: QuoteView; stake: string; slippageBps: number };
 
 /** E-09: the fee config, required only where a fee is quoted or built. */
-function feePin(d: FlowDeps): { model: PinnedFeeModel; capBps: number } {
+function feePin(d: FlowDeps): { model: PinnedFeeModel; capBps: number; explicit: boolean } {
   if (d.feeModel === null || d.feeCapBps === null)
     throw new AuthError(503, "NOT_CONFIGURED", "Copying isn't configured on this server yet");
-  return { model: d.feeModel, capBps: d.feeCapBps };
+  return { model: d.feeModel, capBps: d.feeCapBps, explicit: d.feeModelPinned === true };
 }
 
-/** Launch cap, required wherever a copy is quoted, built or confirmed. */
+/** Launch cap, required wherever a copy is quoted or built (and at the build's simulation). */
 function stakeCap(d: FlowDeps): bigint {
   if (d.maxStakeCapBase === null || d.maxStakeCapBase <= 0n)
     throw new AuthError(503, "NOT_CONFIGURED", "Copying isn't configured on this server yet");
+  // Q-01: a cap below the minimum stake leaves nothing a user could save: copying is disabled.
+  if (stakeCapBelowMinError(d.maxStakeCapBase))
+    throw new AuthError(503, STAKE_CAP_BELOW_MIN, "Copying is disabled on this server: its per-copy limit is below the minimum stake");
   return d.maxStakeCapBase;
+}
+/** Q-01: a saved stake below MIN_STAKE_USDC (e.g. saved before the minimum rose) is refused before Panta is asked. */
+function requireStakeAtLeastMin(maxStakeUsdc: string) {
+  if (usdcToBase(maxStakeUsdc) < toMicro(String(MIN_STAKE_USDC)))
+    throw new AuthError(422, "STAKE_BELOW_MIN", `Your max stake is below the ${MIN_STAKE_USDC} USDC minimum. Raise it in Settings.`);
 }
 function stakeAboveCap(cap: bigint): AuthError {
   return new AuthError(
@@ -312,6 +324,7 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
   const { trade, market } = await requireCopyable(d, tradeId);
   const settings = await settingsFor(d, session.uid);
   if (usdcToBase(settings.maxStakeUsdc) > cap) throw stakeAboveCap(cap);
+  requireStakeAtLeastMin(settings.maxStakeUsdc); // before the cache, any Panta call and fee classification
   const now = nowSec(d);
 
   const cacheKey = `quote:${session.uid}:${trade.id}`;
@@ -344,7 +357,7 @@ export async function quoteCopy(d: FlowDeps, request: Request, tradeId: string):
       if (r.marketId !== trade.marketId || fromApiSide(r.side) !== trade.side)
         throw new FeeModelError("QUOTE_MISMATCH", "Panta returned a quote for a different order");
       return r;
-    }, stakeBase, { pinned: pin.model, feeCapBps: pin.capBps });
+    }, stakeBase, { pinned: pin.model, feeCapBps: pin.capBps, explicitPin: pin.explicit });
   } catch (err) {
     if (!(err instanceof FeeModelError)) throw err;
     d.log?.(`copy quote refused: ${err.code}${err.detected ? ` (${err.detected})` : ""}`);
@@ -563,6 +576,7 @@ export async function buildCopy(d: FlowDeps, request: Request, tradeId: string):
 
   const cap = stakeCap(d);
   if (usdcToBase(settings.maxStakeUsdc) > cap) throw stakeAboveCap(cap);
+  requireStakeAtLeastMin(settings.maxStakeUsdc);
   let b: BuildResponse;
   try {
     b = await d.panta.buildPrimaryOrder({
