@@ -48,6 +48,62 @@ describe("describeError", () => {
   });
 });
 
+describe("describeError: the envelope's `fields` (names only)", () => {
+  const fakeKey = "pk_live_" + "Q".repeat(24);
+  const rpc = ["https://mainnet.helius-rpc.com/?api", "key="].join("-") + "deadbeef".repeat(4);
+  const hostile = JSON.parse(
+    JSON.stringify({
+      amountUsdc: [`bad ${fakeKey}`],
+      [fakeKey]: ["x"],
+      [rpc]: [rpc],
+      "line\nbreak": ["a\nINJECTED"],
+      "\u001b[31mred": ["\u001b[0m"],
+      side: ["must be yes or no " + rpc],
+    }).replace("{", '{"__proto__":["polluted"],'),
+  );
+  const d = (fields: unknown) => describeError(new PantaError(400, "INVALID_MARKET_PARAMS", "Panta request failed (400)", undefined, fields));
+  const base = "PantaError: Panta request failed (400) code=INVALID_MARKET_PARAMS";
+
+  it("prints only safe names; never values, keys, URLs, newlines, ANSI or __proto__", () => {
+    expect(Object.keys(hostile)).toContain("__proto__"); // JSON.parse makes it an own key
+    const out = d(hostile);
+    expect(out).toBe(`${base} fields=[amountUsdc,side]`);
+    for (const bad of [fakeKey, "pk_live", "helius", "api-key", "deadbeef", "\n", "INJECTED", "\u001b", "[31m", "red", "__proto__", "polluted", "must be", "bad "])
+      expect(out).not.toContain(bad);
+  });
+
+  it("an array of strings is a list of names (same filters)", () => {
+    expect(d(["amountUsdc", fakeKey, "side", "constructor", "a b"])).toBe(`${base} fields=[amountUsdc,side]`);
+    expect(d([])).toBe(`${base} fields=[]`);
+  });
+
+  it("anything else prints exactly fields=unparsed", () => {
+    for (const bad of ["amountUsdc", 42, null, true, [1, 2], ["ok", 3], new Map([["a", 1]]), Object.assign(Object.create({ evil: 1 }), { x: 1 })])
+      expect(d(bad)).toBe(`${base} fields=unparsed`);
+    expect(d(undefined)).toBe(base); // no fields: no segment (unchanged output)
+  });
+
+  it("at most 10 names and at most 200 chars", () => {
+    const many = Object.fromEntries(Array.from({ length: 15 }, (_, i) => [`f${i}`, ["x"]]));
+    expect(d(many)).toBe(`${base} fields=[${Array.from({ length: 10 }, (_, i) => `f${i}`).join(",")}]`);
+    const long = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`${String.fromCharCode(97 + i)}${"n".repeat(40)}`, ["x"]]));
+    const seg = d(long).slice(base.length);
+    expect(seg.length).toBeLessThanOrEqual(200);
+    expect(seg).toMatch(/^ fields=\[[a-z]n{40}(,[a-z]n{40})*\]$/);
+  });
+
+  it("the configured Panta key never appears, even as a name", () => {
+    const prev = process.env.PANTA_API_KEY;
+    process.env.PANTA_API_KEY = ["abcdefgh", "12345678"].join("");
+    try {
+      expect(d({ abcdefgh12345678: ["x"], abcdefghZZ: ["x"], side: ["x"] })).toBe(`${base} fields=[side]`);
+    } finally {
+      if (prev === undefined) delete process.env.PANTA_API_KEY;
+      else process.env.PANTA_API_KEY = prev;
+    }
+  });
+});
+
 describe("scripts print Panta's 400 code (real mode, stubbed fetch)", () => {
   const wallet = Keypair.generate().publicKey.toBase58();
   const market = Keypair.generate().publicKey.toBase58();
@@ -78,6 +134,25 @@ describe("scripts print Panta's 400 code (real mode, stubbed fetch)", () => {
       expectLine: "PantaError: Panta request failed (400) code=(unprintable)",
     },
     {
+      name: "hostile `fields` (fake key, RPC URL with api-key, newline, ANSI, __proto__): names only",
+      body:
+        '{"code":"INVALID_MARKET_PARAMS","fields":{"__proto__":["polluted"],"amountUsdc":["FAKE_LINE ' +
+        pantaKey +
+        '"],"' +
+        pantaKey +
+        '":["x"],"' +
+        ["https://mainnet.helius-rpc.com/?api", "key=deadbeefdeadbeef"].join("-") +
+        '":["' +
+        rpc +
+        '"],"a\\nFAKE_LINE":["\\u001b[31mFAKE_LINE"],"\\u001b[31mansi":["x"],"side":["x"]}}',
+      expectLine: "PantaError: Panta request failed (400) code=INVALID_MARKET_PARAMS fields=[amountUsdc,side]",
+    },
+    {
+      name: "a `fields` that isn't an object or a string array: fields=unparsed",
+      body: JSON.stringify({ code: "INVALID_MARKET_PARAMS", fields: [{ amountUsdc: pantaKey }] }),
+      expectLine: "PantaError: Panta request failed (400) code=INVALID_MARKET_PARAMS fields=unparsed",
+    },
+    {
       name: "a non-JSON body (envelope didn't parse: HTTP_400)",
       body: "<html>gateway says no " + pantaKey + "</html>",
       expectLine: "PantaError: Panta request failed (400) code=HTTP_400",
@@ -92,6 +167,7 @@ describe("scripts print Panta's 400 code (real mode, stubbed fetch)", () => {
       expect(errLine).toBe(`error: ${c.expectLine}`);
       expect(r.out).not.toContain("FAKE_LINE");
       expect(r.out).not.toContain("gateway says no");
+      for (const s of ["helius", "deadbeef", "polluted", "__proto__", "\u001b"]) expect(r.out).not.toContain(s);
       noSecrets(r.out);
     }, 60_000);
 
@@ -102,6 +178,7 @@ describe("scripts print Panta's 400 code (real mode, stubbed fetch)", () => {
       expect(r.out).toContain(`result: FAIL at error: ${c.expectLine}`);
       expect(r.out).not.toContain("FAKE_LINE");
       expect(r.out).not.toContain("gateway says no");
+      for (const s of ["helius", "deadbeef", "polluted", "__proto__", "\u001b"]) expect(r.out).not.toContain(s);
       noSecrets(r.out);
     }, 60_000);
   }

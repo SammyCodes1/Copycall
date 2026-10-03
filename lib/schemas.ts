@@ -270,7 +270,9 @@ export const PantaErrorEnvelopeSchema = z.object({
   code: z.string(),
   message: z.string().optional(),
   field: z.string().optional(),
-  fields: z.record(z.string(), z.array(z.string())).optional(),
+  // Kept as-is (any shape) so a malformed `fields` doesn't hide Panta's code; only its names are
+  // ever printed, by describeError (lib/panta-error.ts).
+  fields: z.unknown().optional(),
 });
 
 // ---------- our own auth request bodies ----------

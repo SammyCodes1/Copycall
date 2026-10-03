@@ -200,7 +200,7 @@ async function pantaRequest<S extends z.ZodTypeAny>(spec: RequestSpec, schema: S
       const env = PantaErrorEnvelopeSchema.safeParse(json);
       const code = env.success ? env.data.code : `HTTP_${res.status}`;
       const message = env.success && env.data.message ? env.data.message : `Panta request failed (${res.status})`;
-      throw new PantaError(res.status, code, message, env.success ? env.data.field : undefined);
+      throw new PantaError(res.status, code, message, env.success ? env.data.field : undefined, env.success ? env.data.fields : undefined);
     }
     const parsed = schema.safeParse(json);
     if (!parsed.success) {
